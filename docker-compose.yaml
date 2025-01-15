@@ -1,0 +1,38 @@
+services:
+  attendee-worker-local:
+    build: ./
+    networks:
+      - attendee_network
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
+    command: celery -A attendee worker -l INFO
+
+  attendee-app-local:
+    build: ./
+    networks:
+      - attendee_network
+    ports:
+      - "8000"
+    environment:
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
+    # command: python manage.py runserver 0.0.0.0:8000
+    command: gunicorn attendee.wsgi
+
+
+networks:
+  attendee_network:
+    driver: bridge
