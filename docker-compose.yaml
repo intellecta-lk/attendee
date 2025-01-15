@@ -30,7 +30,7 @@ services:
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
     # command: python manage.py runserver 0.0.0.0:8000
-    command: gunicorn attendee.wsgi
+    command: gunicorn --bind 0.0.0.0:8000 attendee.wsgi
 
 
 networks:
