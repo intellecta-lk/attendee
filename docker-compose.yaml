@@ -32,10 +32,11 @@ services:
     # command: python manage.py runserver 0.0.0.0:8000
     command: gunicorn --bind 0.0.0.0:8000 attendee.wsgi
     healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://localhost:8000 || exit 1
-      interval: 10s
-      retries: 5
-      timeout: 10s
+      test: ["CMD" , "curl" ,"-f", "http://localhost:8000/"]
+      # test: wget --no-verbose --tries=1 --spider http://localhost:8000 || exit 1
+      # interval: 10s
+      # retries: 5
+      # timeout: 10s
 
 networks:
   attendee_network:
