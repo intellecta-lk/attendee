@@ -7,6 +7,8 @@ from .video_input_manager import VideoInputManager
 from urllib.parse import urlparse, parse_qs
 import re
 
+from bots.bot_adapter import BotAdapter
+
 import gi
 gi.require_version('GLib', '2.0')
 from gi.repository import GLib
@@ -50,15 +52,7 @@ def parse_join_url(join_url):
     
     return (meeting_id, password)
 
-class ZoomBotAdapter:
-    class Messages:
-        LEAVE_MEETING_WAITING_FOR_HOST = "Leave meeting because received waiting for host status"
-        ZOOM_AUTHORIZATION_FAILED = "Zoom authorization failed"
-        BOT_PUT_IN_WAITING_ROOM = "Bot put in waiting room"
-        BOT_JOINED_MEETING = "Bot joined meeting"
-        BOT_RECORDING_PERMISSION_GRANTED = "Bot recording permission granted"
-        MEETING_ENDED = "Meeting ended"
-        NEW_UTTERANCE = "New utterance"
+class ZoomBotAdapter(BotAdapter):
 
     def __init__(self, *, display_name, send_message_callback, add_audio_chunk_callback, zoom_client_id, zoom_client_secret, meeting_url, add_video_frame_callback, wants_any_video_frames_callback, add_mixed_audio_chunk_callback):
         self.display_name = display_name
@@ -363,6 +357,9 @@ class ZoomBotAdapter:
 
         self.add_audio_chunk_callback(node_id, current_time, data.GetBuffer())
 
+    def add_mixed_audio_chunk_convert_to_bytes(self, data):
+        self.add_mixed_audio_chunk_callback(data.GetBuffer())
+
     def start_raw_recording(self):
         self.recording_ctrl = self.meeting_service.GetMeetingRecordingController()
 
@@ -387,7 +384,7 @@ class ZoomBotAdapter:
             self.audio_source = zoom.ZoomSDKAudioRawDataDelegateCallbacks(
                 collectPerformanceData=True, 
                 onOneWayAudioRawDataReceivedCallback=self.on_one_way_audio_raw_data_received_callback,
-                onMixedAudioRawDataReceivedCallback=self.add_mixed_audio_chunk_callback
+                onMixedAudioRawDataReceivedCallback=self.add_mixed_audio_chunk_convert_to_bytes
             )
 
         audio_helper_subscribe_result = self.audio_helper.subscribe(self.audio_source, False)
@@ -498,3 +495,10 @@ class ZoomBotAdapter:
             print("Authentication successful")
         else:
             print("Authentication failed with error:", result)
+
+    def get_first_buffer_timestamp_ms_offset(self):
+        return 0
+
+    def check_auto_leave_conditions(self):
+        # Nothing implemented for this yet
+        return

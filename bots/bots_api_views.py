@@ -131,10 +131,15 @@ class BotCreateView(APIView):
         
         meeting_url = serializer.validated_data['meeting_url']
         bot_name = serializer.validated_data['bot_name']
+        transcription_settings = serializer.validated_data['transcription_settings']
+        settings = {
+            'transcription_settings': transcription_settings
+        }
         bot = Bot.objects.create(
             project=project,
             meeting_url=meeting_url,
-            name=bot_name
+            name=bot_name,
+            settings=settings,
         )
 
         Recording.objects.create(
@@ -442,7 +447,7 @@ class TranscriptView(APIView):
                     'transcription': utterance.transcription
                 }
                 for utterance in utterances     
-                if utterance.transcription.get('words', [])
+                if utterance.transcription.get('transcript', '')
             ]
             
             serializer = TranscriptUtteranceSerializer(transcript_data, many=True)

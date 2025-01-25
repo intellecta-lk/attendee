@@ -46,6 +46,11 @@ RUN apt-get update  \
     vim \
     libpq-dev
 
+# Install Chrome dependencies
+RUN apt-get install -y xvfb x11-xkb-utils xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic x11-apps libvulkan1 fonts-liberation xdg-utils wget
+RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+RUN apt-get install -y ./google-chrome-stable_current_amd64.deb
+
 # Install ALSA
 RUN apt-get install -y libasound2 libasound2-plugins alsa alsa-utils alsa-oss
 

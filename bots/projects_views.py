@@ -5,6 +5,7 @@ from django.views import View
 from django.http import HttpResponse
 from .models import ApiKey
 from django.db import models
+from .utils import generate_recordings_json_for_bot_detail_view
 
 class ProjectUrlContextMixin:
     def get_project_context(self, object_id, project):
@@ -219,6 +220,7 @@ class ProjectBotDetailView(LoginRequiredMixin, ProjectUrlContextMixin, View):
             'bot': bot,
             'BotStates': BotStates,
             'RecordingStates': RecordingStates,
+            'recordings': generate_recordings_json_for_bot_detail_view(bot),
         })
         
         return render(request, 'projects/project_bot_detail.html', context)

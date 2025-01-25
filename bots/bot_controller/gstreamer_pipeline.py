@@ -4,12 +4,16 @@ from gi.repository import Gst, GLib
 import time
 
 class GstreamerPipeline:
-    def __init__(self, on_new_sample_callback, video_frame_size):
+    AUDIO_FORMAT_PCM = 'audio/x-raw,format=S16LE,channels=1,rate=32000,layout=interleaved'
+    AUDIO_FORMAT_FLOAT = 'audio/x-raw,format=F32LE,channels=1,rate=48000,layout=interleaved'
+
+    def __init__(self, on_new_sample_callback, video_frame_size, audio_format):
         self.on_new_sample_callback = on_new_sample_callback
         self.video_frame_size = video_frame_size
         self.pipeline = None
         self.appsrc = None
         self.recording_active = False
+        self.audio_format = audio_format
 
         self.audio_appsrc = None
         self.audio_recording_active = False
@@ -41,7 +45,7 @@ class GstreamerPipeline:
             'queue name=q1 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! ' # q1 can contain 100mb of video before it drops
             'videoconvert ! '
             'videorate ! '
-            'queue name=q2 max-size-buffers=1000 max-size-bytes=200000000 max-size-time=0 ! ' # q2 can contain 100mb of video before it drops
+            'queue name=q2 max-size-buffers=5000 max-size-bytes=500000000 max-size-time=0 ! ' # q2 can contain 100mb of video before it drops
             'x264enc tune=zerolatency speed-preset=ultrafast ! '
             'queue name=q3 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! '
             'mp4mux name=muxer ! queue name=q4 ! appsink name=sink emit-signals=true sync=false drop=false '
@@ -71,9 +75,7 @@ class GstreamerPipeline:
         self.appsrc.set_property('block', True)  # This helps with synchronization
 
         # Configure audio appsrc
-        audio_caps = Gst.Caps.from_string(
-            'audio/x-raw,format=S16LE,channels=1,rate=32000,layout=interleaved'
-        )
+        audio_caps = Gst.Caps.from_string(self.audio_format)
         self.audio_appsrc.set_property('caps', audio_caps)
         self.audio_appsrc.set_property('format', Gst.Format.TIME)
         self.audio_appsrc.set_property('is-live', True)
@@ -139,13 +141,13 @@ class GstreamerPipeline:
         self.queue_drops[queue_name] += 1
         return True
     
-    def on_mixed_audio_raw_data_received_callback(self, data):
+    def on_mixed_audio_raw_data_received_callback(self, data, timestamp = None):
         if not self.audio_recording_active or not self.audio_appsrc or not self.recording_active or not self.appsrc:
             return
 
         try:
-            current_time_ns = time.time_ns()
-            buffer_bytes = data.GetBuffer()
+            current_time_ns = timestamp if timestamp else time.time_ns()
+            buffer_bytes = data
             buffer = Gst.Buffer.new_wrapped(buffer_bytes)
             
             # Initialize start time if not set

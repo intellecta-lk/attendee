@@ -2,6 +2,7 @@ from pydub import AudioSegment
 import io
 import cv2
 import numpy as np
+from .models import RecordingStates
 
 def pcm_to_mp3(pcm_data: bytes, sample_rate: int = 32000, channels: int = 1, sample_width: int = 2, bitrate: str = "128k") -> bytes:
     """
@@ -114,3 +115,143 @@ def png_to_yuv420_frame(png_bytes: bytes, width: int = 640, height: int = 360) -
     
     # Return as bytes
     return yuv_frame.tobytes()
+
+def utterance_words(utterance, offset = 0.0):
+    if 'words' in utterance.transcription:
+        return utterance.transcription['words']
+
+    return [
+            {
+                'start': offset,
+                'end': offset + utterance.duration_ms / 1000.0,
+                'punctuated_word': utterance.transcription['transcript'],
+                'word': utterance.transcription['transcript'],
+            }
+        ]
+
+class AggregatedUtterance:
+    def __init__(self, utterance):
+        self.participant = utterance.participant
+        self.transcription = utterance.transcription.copy()
+        self.timestamp_ms = utterance.timestamp_ms
+        self.duration_ms = utterance.duration_ms
+        self.id = utterance.id
+        self.transcription['words'] = utterance_words(utterance)
+        
+    def aggregate(self, utterance):
+        self.transcription['words'].extend(utterance_words(utterance, offset = (utterance.timestamp_ms - self.timestamp_ms) / 1000.0))
+        self.transcription['transcript'] += " " + utterance.transcription['transcript']
+        self.duration_ms += utterance.duration_ms        
+        
+
+def generate_aggregated_utterances(recording):
+    utterances_sorted = recording.utterances.all().order_by('timestamp_ms')
+
+    
+    aggregated_utterances = []
+    current_aggregated_utterance = None
+    for utterance in utterances_sorted:
+        if not utterance.transcription:
+            continue
+        if not utterance.transcription.get('transcript'):
+            continue
+
+        if current_aggregated_utterance is None:
+            current_aggregated_utterance = AggregatedUtterance(utterance)
+        else:
+            if utterance.transcription.get('words') is None and utterance.participant.id == current_aggregated_utterance.participant.id and utterance.timestamp_ms - (current_aggregated_utterance.timestamp_ms + current_aggregated_utterance.duration_ms) < 3000:
+                current_aggregated_utterance.aggregate(utterance)
+            else:
+                aggregated_utterances.append(current_aggregated_utterance)
+                current_aggregated_utterance = AggregatedUtterance(utterance)
+
+    if current_aggregated_utterance:
+        aggregated_utterances.append(current_aggregated_utterance)
+    return aggregated_utterances
+
+def generate_utterance_json_for_bot_detail_view(recording):
+    utterances_data = []
+    recording_first_buffer_timestamp_ms = recording.first_buffer_timestamp_ms
+
+    aggregated_utterances = generate_aggregated_utterances(recording)
+    for utterance in aggregated_utterances:
+        if not utterance.transcription:
+            continue
+        if not utterance.transcription.get('transcript'):
+            continue
+
+        if recording_first_buffer_timestamp_ms:
+            if utterance.transcription.get('words'):
+                first_word_start_relative_ms = int(utterance.transcription.get('words')[0].get('start') * 1000)
+            else:
+                first_word_start_relative_ms = 0
+
+            relative_timestamp_ms = utterance.timestamp_ms - recording_first_buffer_timestamp_ms + first_word_start_relative_ms
+        else:
+            # If we don't have a first buffer timestamp, we use the absolute timestamp
+            relative_timestamp_ms = utterance.timestamp_ms
+
+        relative_words_data = []
+        if utterance.transcription.get('words'):
+            if recording_first_buffer_timestamp_ms:
+                utterance_start_relative_ms = utterance.timestamp_ms - recording_first_buffer_timestamp_ms
+            else:
+                # If we don't have a first buffer timestamp, we use the absolute timestamp
+                utterance_start_relative_ms = utterance.timestamp_ms 
+
+            for word in utterance.transcription['words']:
+                relative_word = word.copy()
+                relative_word['start'] = utterance_start_relative_ms + int(word['start'] * 1000)
+                relative_word['end'] = utterance_start_relative_ms + int(word['end'] * 1000)
+                relative_words_data.append(relative_word)
+
+        relative_words_data_with_spaces = []
+        for i, word in enumerate(relative_words_data):
+            relative_words_data_with_spaces.append({
+                'word': word['punctuated_word'],
+                'start': word['start'],
+                'end': word['end'],
+                'utterance_id': utterance.id,
+            })
+            # Add space between words
+            if i < len(relative_words_data) - 1:
+                next_word = relative_words_data[i + 1]
+                relative_words_data_with_spaces.append({
+                    'word': ' ',
+                    'start': next_word['start'],
+                    'end': next_word['start'],
+                    'utterance_id': utterance.id,
+                    'is_space': True
+                })
+
+        timestamp_ms = (relative_timestamp_ms 
+                        if recording_first_buffer_timestamp_ms is not None 
+                        else utterance.timestamp_ms)
+        seconds = timestamp_ms // 1000
+        timestamp_display = f"{seconds // 60}:{seconds % 60:02d}"
+
+        utterance_data = {
+            'id': utterance.id,
+            'participant': utterance.participant,
+            'relative_timestamp_ms': relative_timestamp_ms,
+            'words': relative_words_data_with_spaces,
+            'transcript': utterance.transcription.get('transcript'),
+            'timestamp_display': timestamp_display,
+        }
+        utterances_data.append(utterance_data)
+
+    return utterances_data
+
+def generate_recordings_json_for_bot_detail_view(bot):
+    # Process recordings and utterances
+    recordings_data = []
+    for recording in bot.recordings.all():
+        if recording.state != RecordingStates.COMPLETE:
+            continue
+        recordings_data.append({
+            'state': recording.state,
+            'url': recording.url,
+            'utterances': generate_utterance_json_for_bot_detail_view(recording)
+        })
+
+    return recordings_data

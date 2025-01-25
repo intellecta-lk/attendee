@@ -2,11 +2,29 @@ from bots.models import *
 from .individual_audio_input_manager import IndividualAudioInputManager
 from .audio_output_manager import AudioOutputManager
 from .streaming_uploader import StreamingUploader
+from .closed_caption_manager import ClosedCaptionManager
 import os
 import signal
 import redis
+from bots.bot_adapter import BotAdapter
+from .gstreamer_pipeline import GstreamerPipeline
 
 class BotController:
+    MEETING_TYPE_ZOOM = "zoom"
+    MEETING_TYPE_GOOGLE_MEET = "google_meet"
+
+    def get_google_meet_bot_adapter(self):
+        from bots.google_meet_bot_adapter import GoogleMeetBotAdapter
+
+        return GoogleMeetBotAdapter(
+            display_name=self.bot_in_db.name,
+            send_message_callback=self.on_message_from_adapter,
+            meeting_url=self.bot_in_db.meeting_url,
+            add_video_frame_callback=self.gstreamer_pipeline.on_new_video_frame,
+            wants_any_video_frames_callback=self.gstreamer_pipeline.wants_any_video_frames,
+            add_mixed_audio_chunk_callback=self.gstreamer_pipeline.on_mixed_audio_raw_data_received_callback,
+            upsert_caption_callback=self.closed_caption_manager.upsert_caption
+        )
 
     def get_zoom_bot_adapter(self):
         from bots.zoom_bot_adapter import ZoomBotAdapter
@@ -30,11 +48,33 @@ class BotController:
             wants_any_video_frames_callback=self.gstreamer_pipeline.wants_any_video_frames,
             add_mixed_audio_chunk_callback=self.gstreamer_pipeline.on_mixed_audio_raw_data_received_callback
         )
+
+    def get_meeting_type(self):
+        if "zoom.us" in self.bot_in_db.meeting_url:
+            return self.MEETING_TYPE_ZOOM
+        elif "meet.google.com" in self.bot_in_db.meeting_url:
+            return self.MEETING_TYPE_GOOGLE_MEET
+        else:
+            raise Exception(f"Unknown meeting type: {self.bot_in_db.meeting_type}")
+
+    def get_audio_format(self):
+        meeting_type = self.get_meeting_type()
+        if meeting_type == self.MEETING_TYPE_ZOOM:
+            return GstreamerPipeline.AUDIO_FORMAT_PCM
+        elif meeting_type == self.MEETING_TYPE_GOOGLE_MEET:
+            return GstreamerPipeline.AUDIO_FORMAT_FLOAT
+
+    def get_bot_adapter(self):
+        meeting_type = self.get_meeting_type()
+        if meeting_type == self.MEETING_TYPE_ZOOM:
+            return self.get_zoom_bot_adapter()
+        elif meeting_type == self.MEETING_TYPE_GOOGLE_MEET:
+            return self.get_google_meet_bot_adapter()
     
     def get_first_buffer_timestamp_ms(self):
         if self.gstreamer_pipeline.start_time_ns is None:
             return None
-        return int(self.gstreamer_pipeline.start_time_ns / 1_000_000)
+        return int(self.gstreamer_pipeline.start_time_ns / 1_000_000) + self.adapter.get_first_buffer_timestamp_ms_offset()
 
     def recording_file_saved(self, s3_storage_key):
         recording = Recording.objects.get(bot=self.bot_in_db, is_default_recording=True)
@@ -108,20 +148,20 @@ class BotController:
         gi.require_version('GLib', '2.0')
         from gi.repository import GLib
 
-        from .gstreamer_pipeline import GstreamerPipeline
-
         # Initialize core objects
-        self.individual_audio_input_manager = IndividualAudioInputManager(save_utterance_callback=self.save_utterance, get_participant_callback=self.get_participant)
-        
+        # Only used for adapters that can provider per-participant audio
+        self.individual_audio_input_manager = IndividualAudioInputManager(save_utterance_callback=self.save_individual_audio_utterance, get_participant_callback=self.get_participant)
+        self.closed_caption_manager = ClosedCaptionManager(save_utterance_callback=self.save_closed_caption_utterance, get_participant_callback=self.get_participant)
+
         self.audio_output_manager = AudioOutputManager(currently_playing_audio_media_request_finished_callback=self.currently_playing_audio_media_request_finished)
 
-        self.gstreamer_pipeline = GstreamerPipeline(on_new_sample_callback=self.on_new_sample_from_gstreamer_pipeline, video_frame_size=(1920, 1080))
+        self.gstreamer_pipeline = GstreamerPipeline(on_new_sample_callback=self.on_new_sample_from_gstreamer_pipeline, video_frame_size=(1920, 1080), audio_format=self.get_audio_format())
         self.gstreamer_pipeline.setup()
         
         self.streaming_uploader = StreamingUploader(os.environ.get('AWS_RECORDING_STORAGE_BUCKET_NAME'), self.get_recording_filename())
         self.streaming_uploader.start_upload()
 
-        self.adapter = self.get_zoom_bot_adapter()
+        self.adapter = self.get_bot_adapter()
 
         # Create GLib main loop
         self.main_loop = GLib.MainLoop()
@@ -274,6 +314,12 @@ class BotController:
             # Process audio chunks
             self.individual_audio_input_manager.process_chunks()
 
+            # Process captions
+            self.closed_caption_manager.process_captions()
+
+            #Check if auto-leave conditions are met
+            self.adapter.check_auto_leave_conditions()
+
             # Process audio output
             self.audio_output_manager.monitor_currently_playing_audio_media_request()
             return True
@@ -283,7 +329,42 @@ class BotController:
             self.cleanup()
             return False
 
-    def save_utterance(self, message):
+    def get_recording_in_progress(self):
+        recordings_in_progress = Recording.objects.filter(bot=self.bot_in_db, state=RecordingStates.IN_PROGRESS)
+        if recordings_in_progress.count() == 0:
+            raise Exception("No recording in progress found")
+        if recordings_in_progress.count() > 1:
+            raise Exception(f"Expected at most one recording in progress for bot {self.bot_in_db.object_id}, but found {recordings_in_progress.count()}")
+        return recordings_in_progress.first()
+
+    def save_closed_caption_utterance(self, message):
+        participant, _ = Participant.objects.get_or_create(
+            bot=self.bot_in_db,
+            uuid=message['participant_uuid'],
+            defaults={
+                'user_uuid': message['participant_user_uuid'],
+                'full_name': message['participant_full_name'],
+            }
+        )
+
+        # Create new utterance record
+        recording_in_progress = self.get_recording_in_progress()
+        source_uuid = f"{recording_in_progress.object_id}-{message['source_uuid_suffix']}"
+        utterance, _ = Utterance.objects.update_or_create(
+            recording=recording_in_progress,
+            source_uuid=source_uuid,
+            defaults={
+                'source': Utterance.Sources.CLOSED_CAPTION_FROM_PLATFORM,
+                'participant': participant,
+                'transcription': {'transcript': message['text']},
+                'timestamp_ms': message['timestamp_ms'],
+                'duration_ms': message['duration_ms'],
+            }
+        )
+
+        RecordingManager.set_recording_transcription_in_progress(recording_in_progress)
+
+    def save_individual_audio_utterance(self, message):
         from bots.tasks.process_utterance_task import process_utterance
 
         print(f"Received message that new utterance was detected")
@@ -299,13 +380,9 @@ class BotController:
         )
 
         # Create new utterance record
-        recordings_in_progress = Recording.objects.filter(bot=self.bot_in_db, state=RecordingStates.IN_PROGRESS)
-        if recordings_in_progress.count() == 0:
-            raise Exception("No recording in progress found")
-        if recordings_in_progress.count() > 1:
-            raise Exception(f"Expected at most one recording in progress for bot {self.bot_in_db.object_id}, but found {recordings_in_progress.count()}")
-        recording_in_progress = recordings_in_progress.first()
+        recording_in_progress = self.get_recording_in_progress()
         utterance = Utterance.objects.create(
+            source=Utterance.Sources.PER_PARTICIPANT_AUDIO,
             recording=recording_in_progress,
             participant=participant,
             audio_blob=message['audio_data'],
@@ -326,13 +403,14 @@ class BotController:
         GLib.idle_add(lambda: self.take_action_based_on_message_from_adapter(message))
         
     def take_action_based_on_message_from_adapter(self, message):
-        from bots.zoom_bot_adapter import ZoomBotAdapter
-
-        if message.get('message') == ZoomBotAdapter.Messages.MEETING_ENDED:
+        if message.get('message') == BotAdapter.Messages.MEETING_ENDED:
             print("Received message that meeting ended")
             if self.individual_audio_input_manager:
                 print("Flushing utterances...")
                 self.individual_audio_input_manager.flush_utterances()
+            if self.closed_caption_manager:
+                print("Flushing captions...")
+                self.closed_caption_manager.flush_captions()
 
             if self.bot_in_db.state == BotStates.LEAVING:
                 BotEventManager.create_event(
@@ -347,7 +425,7 @@ class BotController:
             self.cleanup()
             return
         
-        if message.get('message') == ZoomBotAdapter.Messages.ZOOM_AUTHORIZATION_FAILED:
+        if message.get('message') == BotAdapter.Messages.ZOOM_AUTHORIZATION_FAILED:
             print(f"Received message that authorization failed with zoom_result_code={message.get('zoom_result_code')}")
             BotEventManager.create_event(
                 bot=self.bot_in_db,
@@ -358,7 +436,7 @@ class BotController:
             self.cleanup()
             return
 
-        if message.get('message') == ZoomBotAdapter.Messages.LEAVE_MEETING_WAITING_FOR_HOST:
+        if message.get('message') == BotAdapter.Messages.LEAVE_MEETING_WAITING_FOR_HOST:
             print("Received message to Leave meeting because received waiting for host status")
             BotEventManager.create_event(
                 bot=self.bot_in_db,
@@ -368,7 +446,7 @@ class BotController:
             self.cleanup()
             return
 
-        if message.get('message') == ZoomBotAdapter.Messages.BOT_PUT_IN_WAITING_ROOM:
+        if message.get('message') == BotAdapter.Messages.BOT_PUT_IN_WAITING_ROOM:
             print("Received message to put bot in waiting room")
             BotEventManager.create_event(
                 bot=self.bot_in_db,
@@ -376,7 +454,7 @@ class BotController:
             )
             return
 
-        if message.get('message') == ZoomBotAdapter.Messages.BOT_JOINED_MEETING:
+        if message.get('message') == BotAdapter.Messages.BOT_JOINED_MEETING:
             print("Received message that bot joined meeting")
             BotEventManager.create_event(
                 bot=self.bot_in_db,
@@ -384,7 +462,7 @@ class BotController:
             )
             return
 
-        if message.get('message') == ZoomBotAdapter.Messages.BOT_RECORDING_PERMISSION_GRANTED:
+        if message.get('message') == BotAdapter.Messages.BOT_RECORDING_PERMISSION_GRANTED:
             print("Received message that bot recording permission granted")
             BotEventManager.create_event(
                 bot=self.bot_in_db,
@@ -392,4 +470,4 @@ class BotController:
             )
             return
 
-        raise Exception(f"Received unexpected message from zoom bot adapter: {message}")
+        raise Exception(f"Received unexpected message from bot adapter: {message}")

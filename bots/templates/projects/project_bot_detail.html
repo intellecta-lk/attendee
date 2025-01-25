@@ -120,39 +120,36 @@
     <div class="tab-content">
         <!-- Recordings Tab -->
         <div class="tab-pane fade show active" id="recordings" role="tabpanel">
-            {% if bot.recordings.all %}
-                {% for recording in bot.recordings.all %}
+            {% if recordings %}
+                {% for recording in recordings %}
                     <div class="recording-item">
                         {% if recording.state == RecordingStates.COMPLETE %}
                             <div class="recording-container">
                                 <div class="transcript-column">
-                                    {% for utterance in recording.utterances.all|dictsort:"timestamp_ms" %}
-                                        {% if utterance.transcription.transcript %}
-                                            <div class="utterance-item">
-                                                <div class="speaker-bar" style="background-color: {{ utterance.participant.user_uuid|participant_color }}"></div>
-                                                <div class="utterance-content">
-                                                    <div class="utterance-timestamp" role="button" style="cursor: pointer" 
-                                                         onclick="seekVideo(this, {{ utterance.relative_timestamp_ms }})">
-                                                        {% if recording.first_buffer_timestamp_ms is not None %}
-                                                            {% widthratio utterance.relative_timestamp_ms 1000 1 as seconds %}
-                                                        {% else %}
-                                                            {% widthratio utterance.timestamp_ms 1000 1 as seconds %}
-                                                        {% endif %}
-                                                        {{ seconds|integer_divide:60 }}:{{ seconds|modulo:60|stringformat:"02d" }} | 
-                                                        {{ utterance.participant.full_name }}
-                                                    </div>
-                                                    <div class="utterance-text">
-                                                        {% if utterance.transcription.words %}
-                                                            {% for word in utterance.get_relative_word_timestamps %}
-                                                                <span class="word" data-utterance-id="{{ utterance.id|md5 }}" data-start="{{ word.start }}" data-end="{{ word.end }}">{{ word.punctuated_word }}</span>{% if not forloop.last %}{% with next_word=utterance.get_relative_word_timestamps|get_next:forloop.counter0 %}<span class="word-space" data-utterance-id="{{ utterance.id|md5 }}" data-start="{{ next_word.start }}" data-end="{{ next_word.start }}"> </span>{% endwith %}{% endif %}
-                                                            {% endfor %}
-                                                        {% else %}
-                                                            {{ utterance.transcription.transcript }}
-                                                        {% endif %}
-                                                    </div>
+                                    {% for utterance in recording.utterances %}
+                                        <div class="utterance-item">
+                                            <div class="speaker-bar" style="background-color: {{ utterance.participant.uuid|participant_color }}"></div>
+                                            <div class="utterance-content">
+                                                <div class="utterance-timestamp" role="button" style="cursor: pointer" 
+                                                     onclick="seekVideo(this, {{ utterance.relative_timestamp_ms }})">
+                                                    {{ utterance.timestamp_display }} | 
+                                                    {{ utterance.participant.full_name }}
+                                                </div>
+                                                <div class="utterance-text">
+                                                    {% if utterance.words %}
+                                                        {% for word_data in utterance.words %}
+                                                            <span class="{% if word_data.is_space %}word-space{% else %}word{% endif %}" 
+                                                                  data-utterance-id="{{ word_data.utterance_id|md5 }}" 
+                                                                  data-start="{{ word_data.start }}" 
+                                                                  data-end="{{ word_data.end }}">{{ word_data.word }}
+                                                            </span>
+                                                        {% endfor %}
+                                                    {% else %}
+                                                        {{ utterance.transcript }}
+                                                    {% endif %}
                                                 </div>
                                             </div>
-                                        {% endif %}
+                                        </div>
                                     {% empty %}
                                         <div class="alert alert-info">No transcripts available.</div>
                                     {% endfor %}
