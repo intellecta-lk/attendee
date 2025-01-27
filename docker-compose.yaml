@@ -13,6 +13,13 @@ services:
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
     command: celery -A attendee worker -l INFO
+    healthcheck:
+      test: ["CMD-SHELL", "celery inspect ping --destination celery@$$HOSTNAME"]
+      # interval: 30s
+      # timeout: 10s
+      # retries: 3
+      # start_period: 5s
+
 
   attendee-app-local:
     build: ./
@@ -38,6 +45,6 @@ services:
       # retries: 5
       # timeout: 10s
 
-networks:
-  attendee_network:
-    driver: bridge
+# networks:
+#   attendee_network:
+#     driver: bridge
