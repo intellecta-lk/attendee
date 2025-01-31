@@ -24,11 +24,11 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-# DEFAULT_FROM_EMAIL = 'noreply@mail.attendee.dev'
+DEFAULT_FROM_EMAIL = 'noreply@attendee.cloud'
 
-# ADMINS = []
+ADMINS = []
 
-# if os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS'):
-#     ADMINS.append(('Attendee Error Reports Email Receiver', os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS')))
+if os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS'):
+    ADMINS.append(('Attendee Error Reports Email Receiver', os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS')))
 
-# SERVER_EMAIL = 'noreply@mail.attendee.dev'
+SERVER_EMAIL = 'noreply@attendee.cloud'
