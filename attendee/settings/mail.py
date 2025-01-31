@@ -19,16 +19,16 @@ SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.mandrillapp.com'
+EMAIL_HOST = 'smtp-relay.brevo.com'
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-DEFAULT_FROM_EMAIL = 'noreply@attendee.cloud'
+DEFAULT_FROM_EMAIL = 'dev@attendee.cloud'
 
 ADMINS = []
 
 if os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS'):
     ADMINS.append(('Attendee Error Reports Email Receiver', os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS')))
 
-SERVER_EMAIL = 'noreply@attendee.cloud'
+SERVER_EMAIL = 'dev@attendee.cloud'
