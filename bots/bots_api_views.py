@@ -2,7 +2,7 @@ from django.shortcuts import render, get_object_or_404
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import Bot, BotEventTypes, BotEventManager, Recording, RecordingTypes, TranscriptionTypes, TranscriptionProviders, Utterance, MediaBlob, BotMediaRequest, BotMediaRequestMediaTypes
+from .models import Bot, BotEventTypes, BotEventManager, Recording, RecordingTypes, TranscriptionTypes, TranscriptionProviders, Utterance, MediaBlob, BotMediaRequest, BotMediaRequestMediaTypes, Credentials
 from .serializers import CreateBotSerializer, BotSerializer, TranscriptUtteranceSerializer, RecordingSerializer
 from .authentication import ApiKeyAuthentication
 from .tasks import run_bot
@@ -10,6 +10,7 @@ import redis
 import json
 import os
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiParameter, OpenApiExample
+from django.urls import reverse
 
 TokenHeaderParameter = [
     OpenApiParameter(
@@ -130,10 +131,28 @@ class BotCreateView(APIView):
         project = request.auth.project
         
         meeting_url = serializer.validated_data['meeting_url']
+        
+        # Check if this is a Zoom meeting and validate credentials
+        if "zoom.us" in meeting_url:
+            zoom_credentials = project.credentials.filter(
+                credential_type=Credentials.CredentialTypes.ZOOM_OAUTH
+            ).first()
+            
+            if not zoom_credentials:
+                settings_url = request.build_absolute_uri(
+                    reverse('bots:project-settings', kwargs={'object_id': project.object_id})
+                )
+                return Response(
+                    {'error': f'Zoom App credentials are required to create a Zoom bot. Please add Zoom credentials at {settings_url}'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
         bot_name = serializer.validated_data['bot_name']
         transcription_settings = serializer.validated_data['transcription_settings']
+        rtmp_settings = serializer.validated_data['rtmp_settings']
         settings = {
-            'transcription_settings': transcription_settings
+            'transcription_settings': transcription_settings,
+            'rtmp_settings': rtmp_settings
         }
         bot = Bot.objects.create(
             project=project,

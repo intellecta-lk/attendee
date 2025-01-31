@@ -432,6 +432,20 @@ components:
               language: en
           description: 'The transcription settings for the bot, e.g. {''deepgram'':
             {''language'': ''en''}}'
+        rtmp_settings:
+          type: object
+          properties:
+            destination_url:
+              type: string
+              description: The URL of the RTMP server to send the stream to
+            stream_key:
+              type: string
+              description: The stream key to use for the RTMP server
+          required:
+          - destination_url
+          - stream_key
+          description: 'RTMP server to stream to, e.g. {''destination_url'': ''rtmp://global-live.mux.com:5222/app'',
+            ''stream_key'': ''xxxx''}.'
       required:
       - bot_name
       - meeting_url

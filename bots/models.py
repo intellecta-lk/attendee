@@ -143,6 +143,19 @@ class Bot(models.Model):
     def deepgram_detect_language(self):
         return self.settings.get('transcription_settings', {}).get('deepgram', {}).get('detect_language', None)
 
+    def rtmp_destination_url(self):
+        rtmp_settings = self.settings.get('rtmp_settings')
+        if not rtmp_settings:
+            return None
+            
+        destination_url = rtmp_settings.get('destination_url', '').rstrip('/')
+        stream_key = rtmp_settings.get('stream_key', '')
+        
+        if not destination_url:
+            return None
+            
+        return f"{destination_url}/{stream_key}"
+
     def last_bot_event(self):
         return self.bot_events.order_by('-created_at').first()
 
@@ -187,6 +200,10 @@ class BotEventSubTypes(models.IntegerChoices):
     COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST = 1, 'Bot could not join meeting - Meeting Not Started - Waiting for Host'
     FATAL_ERROR_PROCESS_TERMINATED = 2, 'Fatal error - Process Terminated'
     COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED = 3, 'Bot could not join meeting - Zoom Authorization Failed'
+    COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED = 4, 'Bot could not join meeting - Zoom Meeting Status Failed'
+    COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP = 5, 'Bot could not join meeting - Unpublished Zoom Apps cannot join external meetings. See https://developers.zoom.us/blog/prepare-meeting-sdk-app-for-review'
+    FATAL_ERROR_RTMP_CONNECTION_FAILED = 6, 'Fatal error - RTMP Connection Failed'
+    COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR = 7, 'Bot could not join meeting - Zoom SDK Internal Error'
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -194,7 +211,11 @@ class BotEventSubTypes(models.IntegerChoices):
         mapping = {
             cls.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST: 'meeting_not_started_waiting_for_host',
             cls.FATAL_ERROR_PROCESS_TERMINATED: 'process_terminated',
-            cls.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED: 'zoom_authorization_failed'
+            cls.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED: 'zoom_authorization_failed',
+            cls.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED: 'zoom_meeting_status_failed',
+            cls.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP: 'unpublished_zoom_app',
+            cls.FATAL_ERROR_RTMP_CONNECTION_FAILED: 'rtmp_connection_failed',
+            cls.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR: 'zoom_sdk_internal_error'
         }
         return mapping.get(value)
 
@@ -241,12 +262,16 @@ class BotEvent(models.Model):
                 check=(
                     # For FATAL_ERROR event type, must have one of the valid event subtypes
                     (Q(event_type=BotEventTypes.FATAL_ERROR) & 
-                     (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED))) |
+                     (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED) |
+                      Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED))) |
                     
                     # For COULD_NOT_JOIN event type, must have one of the valid event subtypes
                     (Q(event_type=BotEventTypes.COULD_NOT_JOIN) & 
                      (Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST) |
-                      Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED))) |
+                      Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED) |
+                      Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED) |
+                      Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP) |
+                      Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR))) |
                     
                     # For all other events, event_sub_type must be null
                     (~Q(event_type=BotEventTypes.FATAL_ERROR) & 

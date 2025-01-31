@@ -8,6 +8,11 @@ import signal
 import redis
 from bots.bot_adapter import BotAdapter
 from .gstreamer_pipeline import GstreamerPipeline
+from .rtmp_client import RTMPClient
+
+import gi
+gi.require_version('GLib', '2.0')
+from gi.repository import GLib
 
 class BotController:
     MEETING_TYPE_ZOOM = "zoom"
@@ -86,8 +91,24 @@ class BotController:
         recording = Recording.objects.get(bot=self.bot_in_db, is_default_recording=True)
         return f"{hashlib.md5(recording.object_id.encode()).hexdigest()}.mp4"
     
+    def on_rtmp_connection_failed(self):
+        print("RTMP connection failed")
+        BotEventManager.create_event(
+            bot=self.bot_in_db,
+            event_type=BotEventTypes.FATAL_ERROR,
+            event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED,
+            event_debug_message=f"rtmp_destination_url={self.bot_in_db.rtmp_destination_url()}"
+        )
+        self.cleanup()
+
     def on_new_sample_from_gstreamer_pipeline(self, data):
-        self.streaming_uploader.upload_part(data)
+        # For now, we'll assume that if rtmp streaming is enabled, we don't need to upload to s3
+        if self.rtmp_client:
+            write_succeeded = self.rtmp_client.write_data(data)
+            if not write_succeeded:
+                GLib.idle_add(lambda: self.on_rtmp_connection_failed())
+        else:
+            self.streaming_uploader.upload_part(data)
 
     def cleanup(self):
         if self.cleanup_called:
@@ -118,6 +139,10 @@ class BotController:
             self.streaming_uploader.complete_upload()
             self.recording_file_saved(self.streaming_uploader.key)
 
+        if self.rtmp_client:
+            print("Telling rtmp client to cleanup...")
+            self.rtmp_client.stop()
+
         if self.adapter:
             print("Telling adapter to leave meeting...")
             self.adapter.leave()
@@ -144,9 +169,6 @@ class BotController:
         pubsub = redis_client.pubsub()
         channel = f"bot_{self.bot_in_db.id}"
         pubsub.subscribe(channel)
-        import gi
-        gi.require_version('GLib', '2.0')
-        from gi.repository import GLib
 
         # Initialize core objects
         # Only used for adapters that can provider per-participant audio
@@ -155,7 +177,19 @@ class BotController:
 
         self.audio_output_manager = AudioOutputManager(currently_playing_audio_media_request_finished_callback=self.currently_playing_audio_media_request_finished)
 
-        self.gstreamer_pipeline = GstreamerPipeline(on_new_sample_callback=self.on_new_sample_from_gstreamer_pipeline, video_frame_size=(1920, 1080), audio_format=self.get_audio_format())
+        gstreamer_output_format = GstreamerPipeline.OUTPUT_FORMAT_MP4
+        self.rtmp_client = None
+        if self.bot_in_db.rtmp_destination_url():
+            gstreamer_output_format = GstreamerPipeline.OUTPUT_FORMAT_FLV
+            self.rtmp_client = RTMPClient(rtmp_url=self.bot_in_db.rtmp_destination_url())
+            self.rtmp_client.start()
+        
+        self.gstreamer_pipeline = GstreamerPipeline(
+            on_new_sample_callback=self.on_new_sample_from_gstreamer_pipeline, 
+            video_frame_size=(1920, 1080), 
+            audio_format=self.get_audio_format(), 
+            output_format=gstreamer_output_format
+        )
         self.gstreamer_pipeline.setup()
         
         self.streaming_uploader = StreamingUploader(os.environ.get('AWS_RECORDING_STORAGE_BUCKET_NAME'), self.get_recording_filename())
@@ -394,14 +428,10 @@ class BotController:
         # Process the utterance immediately
         process_utterance.delay(utterance.id)
         return
-    
-    def on_message_from_adapter(self, message):
-        import gi
-        gi.require_version('GLib', '2.0')
-        from gi.repository import GLib
 
+    def on_message_from_adapter(self, message):
         GLib.idle_add(lambda: self.take_action_based_on_message_from_adapter(message))
-        
+
     def take_action_based_on_message_from_adapter(self, message):
         if message.get('message') == BotAdapter.Messages.MEETING_ENDED:
             print("Received message that meeting ended")
@@ -424,13 +454,46 @@ class BotController:
                 )
             self.cleanup()
             return
-        
+
+        if message.get('message') == BotAdapter.Messages.ZOOM_MEETING_STATUS_FAILED_UNABLE_TO_JOIN_EXTERNAL_MEETING:
+            print(f"Received message that meeting status failed unable to join external meeting with zoom_result_code={message.get('zoom_result_code')}")
+            BotEventManager.create_event(
+                bot=self.bot_in_db,
+                event_type=BotEventTypes.COULD_NOT_JOIN,
+                event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP,
+                event_debug_message=f"zoom_result_code={message.get('zoom_result_code')}"
+            )
+            self.cleanup()
+            return
+
+        if message.get('message') == BotAdapter.Messages.ZOOM_MEETING_STATUS_FAILED:
+            print(f"Received message that meeting status failed with zoom_result_code={message.get('zoom_result_code')}")
+            BotEventManager.create_event(
+                bot=self.bot_in_db,
+                event_type=BotEventTypes.COULD_NOT_JOIN,
+                event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED,
+                event_debug_message=f"zoom_result_code={message.get('zoom_result_code')}"
+            )
+            self.cleanup()
+            return
+
         if message.get('message') == BotAdapter.Messages.ZOOM_AUTHORIZATION_FAILED:
             print(f"Received message that authorization failed with zoom_result_code={message.get('zoom_result_code')}")
             BotEventManager.create_event(
                 bot=self.bot_in_db,
                 event_type=BotEventTypes.COULD_NOT_JOIN,
                 event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED,
+                event_debug_message=f"zoom_result_code={message.get('zoom_result_code')}"
+            )
+            self.cleanup()
+            return
+
+        if message.get('message') == BotAdapter.Messages.ZOOM_SDK_INTERNAL_ERROR:
+            print(f"Received message that SDK internal error with zoom_result_code={message.get('zoom_result_code')}")
+            BotEventManager.create_event(
+                bot=self.bot_in_db,
+                event_type=BotEventTypes.COULD_NOT_JOIN,
+                event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR,
                 event_debug_message=f"zoom_result_code={message.get('zoom_result_code')}"
             )
             self.cleanup()

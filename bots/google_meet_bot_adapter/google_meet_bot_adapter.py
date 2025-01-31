@@ -356,7 +356,9 @@ class GoogleMeetBotAdapter(BotAdapter):
         )
 
         print("Waiting for the name input field...")
-        name_input = self.driver.find_element(By.CSS_SELECTOR, 'input[type="text"][aria-label="Your name"]')
+        name_input = WebDriverWait(self.driver, 60).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="text"][aria-label="Your name"]'))
+        )
         
         print("Waiting for 1 second...")
         sleep(1)
@@ -365,7 +367,9 @@ class GoogleMeetBotAdapter(BotAdapter):
         name_input.send_keys(self.display_name)
         
         print("Waiting for the 'Ask to join' button...")
-        join_button = self.driver.find_element(By.XPATH, '//button[.//span[text()="Ask to join"]]')
+        join_button = WebDriverWait(self.driver, 60).until(
+            EC.presence_of_element_located((By.XPATH, '//button[.//span[text()="Ask to join"]]'))
+        )
         
         print("Clicking the 'Ask to join' button...")
         join_button.click()
