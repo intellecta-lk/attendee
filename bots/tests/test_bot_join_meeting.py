@@ -340,6 +340,13 @@ class TestBotJoinMeeting(TransactionTestCase):
         self.deepgram_credentials.set_credentials({
             'api_key': 'test_api_key'
         })
+        self.google_credentials = Credentials.objects.create(
+            project=self.project,
+            credential_type=Credentials.CredentialTypes.GOOGLE_TTS
+        )
+        self.google_credentials.set_credentials({
+            'service_account_json': '{"type": "service_account", "project_id": "test-project", "private_key_id": "test-private-key-id", "private_key": "test-private-key", "client_email": "test-client-email", "client_id": "test-client-id", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token", "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs", "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/test-client-email"}'
+        })
 
         # Create a bot for each test
         self.bot = Bot.objects.create(
@@ -385,7 +392,36 @@ class TestBotJoinMeeting(TransactionTestCase):
     @patch('bots.zoom_bot_adapter.zoom_bot_adapter.jwt')
     @patch('bots.bot_controller.bot_controller.StreamingUploader')
     @patch('deepgram.DeepgramClient')
-    def test_bot_can_join_meeting_and_record_audio_and_video(self, MockDeepgramClient, MockStreamingUploader, mock_jwt, mock_zoom_sdk_adapter, mock_zoom_sdk_video):
+    @patch('google.cloud.texttospeech.TextToSpeechClient')
+    def test_bot_can_join_meeting_and_record_audio_and_video(self, MockTextToSpeechClient, MockDeepgramClient, MockStreamingUploader, mock_jwt, mock_zoom_sdk_adapter, mock_zoom_sdk_video):
+        # Set up Google TTS mock
+        mock_tts_client = MagicMock()
+        mock_tts_response = MagicMock()
+        
+        # Create fake PCM audio data (1 second of 44.1kHz audio)
+        # WAV header (44 bytes) + PCM data
+        wav_header = (
+            b'RIFF'              # ChunkID (4 bytes)
+            b'\x24\x00\x00\x00'  # ChunkSize (4 bytes)
+            b'WAVE'              # Format (4 bytes)
+            b'fmt '              # Subchunk1ID (4 bytes)
+            b'\x10\x00\x00\x00'  # Subchunk1Size (4 bytes)
+            b'\x01\x00'          # AudioFormat (2 bytes)
+            b'\x01\x00'          # NumChannels (2 bytes)
+            b'\x44\xac\x00\x00'  # SampleRate (4 bytes)
+            b'\x88\x58\x01\x00'  # ByteRate (4 bytes)
+            b'\x02\x00'          # BlockAlign (2 bytes)
+            b'\x10\x00'          # BitsPerSample (2 bytes)
+            b'data'              # Subchunk2ID (4 bytes)
+            b'\x50\x00\x00\x00'  # Subchunk2Size (4 bytes) - size of audio data
+        )
+        pcm_speech_data = b'\x00\x00' * (40)  # small period of silence at 44.1kHz
+        mock_tts_response.audio_content = wav_header + pcm_speech_data
+        
+        # Configure the mock client to return our mock response
+        mock_tts_client.synthesize_speech.return_value = mock_tts_response
+        MockTextToSpeechClient.from_service_account_info.return_value = mock_tts_client
+
         # Set up Deepgram mock
         MockDeepgramClient.return_value = create_mock_deepgram()
         
@@ -412,9 +448,10 @@ class TestBotJoinMeeting(TransactionTestCase):
 
         audio_request = None
         image_request = None
+        speech_request = None
         
         def simulate_join_flow():
-            nonlocal audio_request, image_request
+            nonlocal audio_request, image_request, speech_request
 
             adapter = controller.adapter
             # Simulate successful auth            
@@ -476,6 +513,24 @@ class TestBotJoinMeeting(TransactionTestCase):
             send_sync_command(self.bot, 'sync_media_requests')
 
             # Sleep to give audio output manager time to play the audio
+            time.sleep(2.0)
+
+            # Create text-to-speech request
+            speech_request = BotMediaRequest.objects.create(
+                bot=self.bot,
+                text_to_speak="Hello, this is a test speech",
+                text_to_speech_settings={
+                    'google': {
+                        'voice_language_code': 'en-US',
+                        'voice_name': 'en-US-Standard-A'
+                    }
+                },
+                media_type=BotMediaRequestMediaTypes.AUDIO
+            )
+
+            send_sync_command(self.bot, 'sync_media_requests')
+
+            # Sleep to give audio output manager time to play the speech audio
             time.sleep(2.0)
 
             # Simulate meeting ended
@@ -559,6 +614,10 @@ class TestBotJoinMeeting(TransactionTestCase):
         audio_request.refresh_from_db()
         self.assertEqual(audio_request.state, BotMediaRequestStates.FINISHED)
 
+        # Verify speech request was processed
+        speech_request.refresh_from_db()
+        self.assertEqual(speech_request.state, BotMediaRequestStates.FINISHED)
+
         # Verify image request was processed
         image_request.refresh_from_db() 
         self.assertEqual(image_request.state, BotMediaRequestStates.FINISHED)
@@ -575,8 +634,16 @@ class TestBotJoinMeeting(TransactionTestCase):
         print("utterance.transcription = ", utterance.transcription)
 
         # Verify the bot adapter received the media
-        controller.adapter.audio_raw_data_sender.send.assert_called_once_with(mp3_to_pcm(self.test_mp3_bytes, sample_rate=8000), 8000, mock_zoom_sdk_adapter.ZoomSDKAudioChannel_Mono)
-        controller.adapter.video_sender.sendVideoFrame.assert_called_with(png_to_yuv420_frame(self.test_png_bytes), 640, 360, 0, mock_zoom_sdk_adapter.FrameDataFormat_I420_FULL)
+        controller.adapter.audio_raw_data_sender.send.assert_has_calls([
+            # First call from audio request
+            call(mp3_to_pcm(self.test_mp3_bytes, sample_rate=44100), 44100, mock_zoom_sdk_adapter.ZoomSDKAudioChannel_Mono),
+            # Second call from text-to-speech
+            call(pcm_speech_data, 44100, mock_zoom_sdk_adapter.ZoomSDKAudioChannel_Mono)
+        ], any_order=True)
+        
+        controller.adapter.video_sender.sendVideoFrame.assert_has_calls([
+            call(png_to_yuv420_frame(self.test_png_bytes), 640, 360, 0, mock_zoom_sdk_adapter.FrameDataFormat_I420_FULL)
+        ], any_order=True)
 
         # Cleanup
         controller.cleanup()
@@ -919,25 +986,6 @@ class TestBotJoinMeeting(TransactionTestCase):
         bot_thread.daemon = True
         bot_thread.start()
 
-        def simulate_join_flow():
-            adapter = controller.adapter
-            # Simulate successful auth            
-            adapter.auth_event.onAuthenticationReturnCallback(mock_zoom_sdk_adapter.AUTHRET_SUCCESS)
-
-            # Simulate connecting
-            adapter.meeting_service_event.onMeetingStatusChangedCallback(
-                mock_zoom_sdk_adapter.MEETING_STATUS_CONNECTING, 
-                mock_zoom_sdk_adapter.SDKERR_SUCCESS
-            )
-            
-            # Simulate successful join
-            adapter.meeting_service_event.onMeetingStatusChangedCallback(
-                mock_zoom_sdk_adapter.MEETING_STATUS_INMEETING, 
-                mock_zoom_sdk_adapter.SDKERR_SUCCESS
-            )
-
-            # Wait for the video input manager to be set up
-            time.sleep(2)
         def simulate_join_flow():
             adapter = controller.adapter
             # Simulate successful auth            

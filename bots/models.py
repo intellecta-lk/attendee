@@ -742,6 +742,7 @@ class Credentials(models.Model):
     class CredentialTypes(models.IntegerChoices):
         DEEPGRAM = 1, 'Deepgram'
         ZOOM_OAUTH = 2, 'Zoom OAuth'
+        GOOGLE_TTS = 3, 'Google Text To Speech'
 
     project = models.ForeignKey(
         Project,
@@ -867,6 +868,10 @@ class MediaBlob(models.Model):
             content_type=content_type
         )
 
+
+class TextToSpeechProviders(models.IntegerChoices):
+    GOOGLE = 1, 'Google'
+
 class BotMediaRequestMediaTypes(models.IntegerChoices):
     IMAGE = 1, 'Image'
     AUDIO = 2, 'Audio'
@@ -898,10 +903,22 @@ class BotMediaRequest(models.Model):
         related_name='media_requests'
     )
 
+    text_to_speak = models.TextField(
+        null=True,
+        blank=True
+    )
+
+    text_to_speech_settings = models.JSONField(
+        null=True,
+        default=None
+    )
+
     media_blob = models.ForeignKey(
         MediaBlob,
         on_delete=models.PROTECT,
-        related_name='bot_media_requests'
+        related_name='bot_media_requests',
+        null=True,
+        blank=True
     )
 
     media_type = models.IntegerField(

@@ -301,7 +301,7 @@ class GoogleMeetBotAdapter(BotAdapter):
         options.add_argument("--disable-dev-shm-usage")
         log_path = "chromedriver.log"
 
-        self.driver = uc.Chrome(service_log_path=log_path, use_subprocess=True, options=options)
+        self.driver = uc.Chrome(service_log_path=log_path, use_subprocess=True, options=options, version_main=132)
 
         self.driver.set_window_size(1920, 1080)
 
