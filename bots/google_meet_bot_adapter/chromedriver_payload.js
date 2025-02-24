@@ -345,7 +345,7 @@ class WebSocketClient {
 
   
 
-  sendAudio(timestamp, audioData) {
+  sendAudio(timestamp, streamId, audioData) {
       if (this.ws.readyState !== WebSocket.OPEN) {
           console.error('WebSocket is not connected for audio send', this.ws.readyState);
           return;
@@ -358,7 +358,7 @@ class WebSocketClient {
 
       try {
           // Create final message: type (4 bytes) + timestamp (8 bytes) + audio data
-          const message = new Uint8Array(4 + 8 + audioData.buffer.byteLength);
+          const message = new Uint8Array(4 + 8 + 4 + audioData.buffer.byteLength);
           const dataView = new DataView(message.buffer);
           
           // Set message type (3 for AUDIO)
@@ -367,8 +367,11 @@ class WebSocketClient {
           // Set timestamp as BigInt64
           dataView.setBigInt64(4, BigInt(timestamp), true);
 
+          // Set streamId length and bytes
+          dataView.setInt32(12, streamId, true);
+
           // Copy audio data after type and timestamp
-          message.set(new Uint8Array(audioData.buffer), 12);
+          message.set(new Uint8Array(audioData.buffer), 16);
           
           // Send the binary message
           this.ws.send(message.buffer);
@@ -785,7 +788,7 @@ const handleVideoTrack = async (event) => {
     }
 
     // Add frame rate control variables
-    const targetFPS = 24;
+    const targetFPS = isScreenShare ? 5 : 15;
     const frameInterval = 1000 / targetFPS; // milliseconds between frames
     let lastFrameTime = 0;
 
@@ -886,6 +889,8 @@ const handleAudioTrack = async (event) => {
     const readable = processor.readable;
     const writable = generator.writable;
 
+    const firstStreamId = event.streams[0]?.id;
+
     // Transform stream to intercept frames
     const transformStream = new TransformStream({
         async transform(frame, controller) {
@@ -903,12 +908,29 @@ const handleAudioTrack = async (event) => {
                 // Copy the audio data
                 const numChannels = frame.numberOfChannels;
                 const numSamples = frame.numberOfFrames;
-                const audioData = new Float32Array(numChannels * numSamples);
+                const audioData = new Float32Array(numSamples);
                 
                 // Copy data from each channel
-                for (let channel = 0; channel < numChannels; channel++) {
-                    frame.copyTo(audioData.subarray(channel * numSamples, (channel + 1) * numSamples), 
-                              { planeIndex: channel });
+                // If multi-channel, average all channels together
+                if (numChannels > 1) {
+                    // Temporary buffer to hold each channel's data
+                    const channelData = new Float32Array(numSamples);
+                    
+                    // Sum all channels
+                    for (let channel = 0; channel < numChannels; channel++) {
+                        frame.copyTo(channelData, { planeIndex: channel });
+                        for (let i = 0; i < numSamples; i++) {
+                            audioData[i] += channelData[i];
+                        }
+                    }
+                    
+                    // Average by dividing by number of channels
+                    for (let i = 0; i < numSamples; i++) {
+                        audioData[i] /= numChannels;
+                    }
+                } else {
+                    // If already mono, just copy the data
+                    frame.copyTo(audioData, { planeIndex: 0 });
                 }
 
                 // console.log('frame', frame)
@@ -916,7 +938,8 @@ const handleAudioTrack = async (event) => {
 
                 // Check if audio format has changed
                 const currentFormat = {
-                    numberOfChannels: frame.numberOfChannels,
+                    numberOfChannels: 1,
+                    originalNumberOfChannels: frame.numberOfChannels,
                     numberOfFrames: frame.numberOfFrames,
                     sampleRate: frame.sampleRate,
                     format: frame.format,
@@ -934,13 +957,14 @@ const handleAudioTrack = async (event) => {
                 }
 
                 // If the audioData buffer is all zeros, then we don't want to send it
-                if (audioData.every(value => value === 0)) {
-                    return;
-                }
+                // Removing this since we implemented 3 audio sources in gstreamer pipeline
+                // if (audioData.every(value => value === 0)) {
+                //    return;
+                // }
 
                 // Send audio data through websocket
                 const currentTimeMicros = BigInt(Math.floor(performance.now() * 1000));
-                ws.sendAudio(currentTimeMicros, audioData);
+                ws.sendAudio(currentTimeMicros, firstStreamId, audioData);
 
                 // Pass through the original frame
                 controller.enqueue(frame);
@@ -1061,3 +1085,5 @@ new RTCInterceptor({
         }
     }
 });
+
+
