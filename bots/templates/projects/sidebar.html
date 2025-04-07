@@ -53,6 +53,19 @@
                        onclick="setActiveLink(this)">
                         <i class="bi bi-robot"></i> Bots
                     </a>
+                    {% if project.organization.is_webhooks_enabled %}
+                    <a
+                        class="nav-link"
+                        hx-get="{% url 'projects:project-webhooks' project.object_id %}"
+                        hx-select="#content"
+                        hx-target="#content"
+                        hx-swap="outerHTML"
+                        hx-push-url="true"
+                        onclick="setActiveLink(this)"
+                    >
+                          <i class="bi bi-link"></i> Webhooks
+                    </a>
+                    {% endif %}
                 </nav>
                 
                 <!-- Added logout link at bottom -->

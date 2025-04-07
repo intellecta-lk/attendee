@@ -12,9 +12,12 @@ from .models import (
     BotEventTypes,
     BotStates,
     Recording,
+    RecordingFormats,
     RecordingStates,
     RecordingTranscriptionStates,
+    RecordingViews,
 )
+from .utils import meeting_type_from_url
 
 
 @extend_schema_field(
@@ -33,9 +36,18 @@ from .models import (
                         "description": "Whether to automatically detect the spoken language",
                     },
                 },
-            }
+            },
+            "meeting_closed_captions": {
+                "type": "object",
+                "properties": {
+                    "google_meet_language": {
+                        "type": "string",
+                        "description": "The language code for Google Meet closed captions (e.g. 'en-US'). See here for available languages and codes: https://docs.google.com/spreadsheets/d/1MN44lRrEBaosmVI9rtTzKMii86zGgDwEwg4LSj-SjiE",
+                    },
+                },
+            },
         },
-        "required": ["deepgram"],
+        "required": [],
     }
 )
 class TranscriptionSettingsJSONField(serializers.JSONField):
@@ -59,6 +71,42 @@ class TranscriptionSettingsJSONField(serializers.JSONField):
     }
 )
 class RTMPSettingsJSONField(serializers.JSONField):
+    pass
+
+
+@extend_schema_field(
+    {
+        "type": "object",
+        "properties": {
+            "format": {
+                "type": "string",
+                "description": "The format of the recording to save. The supported formats are 'mp4'.",
+            },
+            "view": {
+                "type": "string",
+                "description": "The view to use for the recording. The supported views are 'speaker_view' and 'gallery_view'.",
+            },
+        },
+        "required": [],
+    }
+)
+class RecordingSettingsJSONField(serializers.JSONField):
+    pass
+
+
+@extend_schema_field(
+    {
+        "type": "object",
+        "properties": {
+            "create_debug_recording": {
+                "type": "boolean",
+                "description": "Whether to generate a recording of the attempt to join the meeting. Used for debugging.",
+            },
+        },
+        "required": [],
+    }
+)
+class DebugSettingsJSONField(serializers.JSONField):
     pass
 
 
@@ -100,11 +148,26 @@ class CreateBotSerializer(serializers.Serializer):
                     {"required": ["detect_language"]},
                 ],
                 "additionalProperties": False,
-            }
+            },
+            "meeting_closed_captions": {
+                "type": "object",
+                "properties": {
+                    "google_meet_language": {"type": "string"},
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
         },
-        "required": ["deepgram"],
+        "required": [],
         "additionalProperties": False,
     }
+
+    def validate_meeting_url(self, value):
+        meeting_type = meeting_type_from_url(value)
+        if meeting_type is None:
+            raise serializers.ValidationError({"meeting_url": "Invalid meeting URL"})
+
+        return value
 
     def validate_transcription_settings(self, value):
         if value is None:
@@ -145,6 +208,68 @@ class CreateBotSerializer(serializers.Serializer):
         destination_url = value.get("destination_url", "")
         if not (destination_url.lower().startswith("rtmp://") or destination_url.lower().startswith("rtmps://")):
             raise serializers.ValidationError({"destination_url": "URL must start with rtmp:// or rtmps://"})
+
+        return value
+
+    recording_settings = RecordingSettingsJSONField(
+        help_text="The settings for the bot's recording. Currently the only setting is 'view' which can be 'speaker_view' or 'gallery_view'.",
+        required=False,
+        default={"format": RecordingFormats.MP4, "view": RecordingViews.SPEAKER_VIEW},
+    )
+
+    RECORDING_SETTINGS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "format": {"type": "string"},
+            "view": {"type": "string"},
+        },
+        "required": [],
+    }
+
+    def validate_recording_settings(self, value):
+        if value is None:
+            return value
+
+        try:
+            jsonschema.validate(instance=value, schema=self.RECORDING_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        # Validate format if provided
+        format = value.get("format")
+        if format not in [RecordingFormats.MP4, None]:
+            raise serializers.ValidationError({"format": "Format must be mp4"})
+
+        # Validate view if provided
+        view = value.get("view")
+        if view not in [RecordingViews.SPEAKER_VIEW, RecordingViews.GALLERY_VIEW, None]:
+            raise serializers.ValidationError({"view": "View must be speaker_view or gallery_view"})
+
+        return value
+
+    debug_settings = DebugSettingsJSONField(
+        help_text="The debug settings for the bot, e.g. {'create_debug_recording': True}.",
+        required=False,
+        default={"create_debug_recording": False},
+    )
+
+    DEBUG_SETTINGS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "create_debug_recording": {"type": "boolean"},
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    def validate_debug_settings(self, value):
+        if value is None:
+            return value
+
+        try:
+            jsonschema.validate(instance=value, schema=self.DEBUG_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
 
         return value
 

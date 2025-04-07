@@ -4,7 +4,10 @@ import cv2
 import numpy as np
 from pydub import AudioSegment
 
-from .models import RecordingStates
+from .models import (
+    MeetingTypes,
+    RecordingStates,
+)
 
 
 def pcm_to_mp3(
@@ -103,30 +106,155 @@ def calculate_audio_duration_ms(audio_data: bytes, content_type: str) -> int:
     return duration_ms
 
 
-def png_to_yuv420_frame(png_bytes: bytes, width: int = 640, height: int = 360) -> bytes:
+def half_ceil(x):
+    return (x + 1) // 2
+
+
+def scale_i420(frame, frame_size, new_size):
     """
-    Convert PNG image bytes to YUV420 (I420) format and resize to specified dimensions.
+    Scales an I420 (YUV 4:2:0) frame from 'frame_size' to 'new_size',
+    handling odd frame widths/heights by using 'ceil' in the chroma planes.
+
+    :param frame:      A bytes object containing the raw I420 frame data.
+    :param frame_size: (orig_width, orig_height)
+    :param new_size:   (new_width, new_height)
+    :return:           A bytes object with the scaled I420 frame.
+    """
+
+    # 1) Unpack source / destination dimensions
+    orig_width, orig_height = frame_size
+    new_width, new_height = new_size
+
+    # 2) Compute source plane sizes with rounding up for chroma
+    orig_chroma_width = half_ceil(orig_width)
+    orig_chroma_height = half_ceil(orig_height)
+
+    y_plane_size = orig_width * orig_height
+    uv_plane_size = orig_chroma_width * orig_chroma_height  # for each U or V
+
+    # 3) Extract Y, U, V planes from the byte array
+    y = np.frombuffer(frame[0:y_plane_size], dtype=np.uint8)
+    u = np.frombuffer(frame[y_plane_size : y_plane_size + uv_plane_size], dtype=np.uint8)
+    v = np.frombuffer(
+        frame[y_plane_size + uv_plane_size : y_plane_size + 2 * uv_plane_size],
+        dtype=np.uint8,
+    )
+
+    # 4) Reshape planes
+    y = y.reshape(orig_height, orig_width)
+    u = u.reshape(orig_chroma_height, orig_chroma_width)
+    v = v.reshape(orig_chroma_height, orig_chroma_width)
+
+    # ---------------------------------------------------------
+    # Scale preserving aspect ratio or do letterbox/pillarbox
+    # ---------------------------------------------------------
+    input_aspect = orig_width / orig_height
+    output_aspect = new_width / new_height
+
+    if abs(input_aspect - output_aspect) < 1e-6:
+        # Same aspect ratio; do a straightforward resize
+        scaled_y = cv2.resize(y, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+        # For U, V we should scale to half-dimensions (rounded up)
+        # of the new size. But OpenCV requires exact (int) dims, so:
+        target_u_width = half_ceil(new_width)
+        target_u_height = half_ceil(new_height)
+
+        scaled_u = cv2.resize(u, (target_u_width, target_u_height), interpolation=cv2.INTER_LINEAR)
+        scaled_v = cv2.resize(v, (target_u_width, target_u_height), interpolation=cv2.INTER_LINEAR)
+
+        # Flatten and return
+        return np.concatenate([scaled_y.flatten(), scaled_u.flatten(), scaled_v.flatten()]).astype(np.uint8).tobytes()
+
+    # Otherwise, the aspect ratios differ => letterbox or pillarbox
+    if input_aspect > output_aspect:
+        # The image is relatively wider => match width, shrink height
+        scaled_width = new_width
+        scaled_height = int(round(new_width / input_aspect))
+    else:
+        # The image is relatively taller => match height, shrink width
+        scaled_height = new_height
+        scaled_width = int(round(new_height * input_aspect))
+
+    # 5) Resize Y, U, and V to the scaled dimensions
+    scaled_y = cv2.resize(y, (scaled_width, scaled_height), interpolation=cv2.INTER_LINEAR)
+
+    # For U, V, use half-dimensions of the scaled result, rounding up.
+    scaled_u_width = half_ceil(scaled_width)
+    scaled_u_height = half_ceil(scaled_height)
+    scaled_u = cv2.resize(u, (scaled_u_width, scaled_u_height), interpolation=cv2.INTER_LINEAR)
+    scaled_v = cv2.resize(v, (scaled_u_width, scaled_u_height), interpolation=cv2.INTER_LINEAR)
+
+    # 6) Create the output buffers. For "dark" black:
+    #    Y=0, U=128, V=128.
+    final_y = np.zeros((new_height, new_width), dtype=np.uint8)
+    final_u = np.full((half_ceil(new_height), half_ceil(new_width)), 128, dtype=np.uint8)
+    final_v = np.full((half_ceil(new_height), half_ceil(new_width)), 128, dtype=np.uint8)
+
+    # 7) Compute centering offsets for each plane (Y first)
+    offset_y = (new_height - scaled_height) // 2
+    offset_x = (new_width - scaled_width) // 2
+
+    final_y[offset_y : offset_y + scaled_height, offset_x : offset_x + scaled_width] = scaled_y
+
+    # Offsets for U and V planes are half of the Y offsets (integer floor)
+    offset_y_uv = offset_y // 2
+    offset_x_uv = offset_x // 2
+
+    final_u[
+        offset_y_uv : offset_y_uv + scaled_u_height,
+        offset_x_uv : offset_x_uv + scaled_u_width,
+    ] = scaled_u
+    final_v[
+        offset_y_uv : offset_y_uv + scaled_u_height,
+        offset_x_uv : offset_x_uv + scaled_u_width,
+    ] = scaled_v
+
+    # 8) Flatten back to I420 layout and return bytes
+
+    return np.concatenate([final_y.flatten(), final_u.flatten(), final_v.flatten()]).astype(np.uint8).tobytes()
+
+
+def png_to_yuv420_frame(png_bytes: bytes) -> tuple:
+    """
+    Convert PNG image bytes to YUV420 (I420) format without resizing,
+    and return the dimensions of the resulting image. The conversion does not work unless the
+    image dimensions are even, so the image is cropped slightly to make the dimensions even.
 
     Args:
         png_bytes (bytes): Input PNG image as bytes
-        width (int): Desired width of output frame (default: 640)
-        height (int): Desired height of output frame (default: 360)
 
     Returns:
-        bytes: YUV420 formatted frame data
+        tuple: (YUV420 formatted frame data, width, height)
     """
     # Convert PNG bytes to numpy array
     png_array = np.frombuffer(png_bytes, np.uint8)
     bgr_frame = cv2.imdecode(png_array, cv2.IMREAD_COLOR)
 
-    # Resize the frame to desired dimensions
-    bgr_frame = cv2.resize(bgr_frame, (width, height), interpolation=cv2.INTER_AREA)
+    # Get original dimensions
+    height, width = bgr_frame.shape[:2]
+
+    # If dimensions are 1, add padding to make them 2
+    if height == 1:
+        bgr_frame = cv2.copyMakeBorder(bgr_frame, 0, 1, 0, 0, cv2.BORDER_REPLICATE)
+        height += 1
+    if width == 1:
+        bgr_frame = cv2.copyMakeBorder(bgr_frame, 0, 0, 0, 1, cv2.BORDER_REPLICATE)
+        width += 1
+
+    # Ensure even dimensions by cropping if necessary
+    if width % 2 != 0:
+        bgr_frame = bgr_frame[:, :-1]
+        width -= 1
+    if height % 2 != 0:
+        bgr_frame = bgr_frame[:-1, :]
+        height -= 1
 
     # Convert BGR to YUV420 (I420)
     yuv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2YUV_I420)
 
-    # Return as bytes
-    return yuv_frame.tobytes()
+    # Return frame data and dimensions
+    return yuv_frame.tobytes(), width, height
 
 
 def utterance_words(utterance, offset=0.0):
@@ -257,6 +385,20 @@ def generate_utterance_json_for_bot_detail_view(recording):
         utterances_data.append(utterance_data)
 
     return utterances_data
+
+
+def meeting_type_from_url(url):
+    if not url:
+        return None
+
+    if "zoom.us" in url:
+        return MeetingTypes.ZOOM
+    elif "meet.google.com" in url:
+        return MeetingTypes.GOOGLE_MEET
+    elif "teams.microsoft.com" in url or "teams.live.com" in url:
+        return MeetingTypes.TEAMS
+    else:
+        return None
 
 
 def generate_recordings_json_for_bot_detail_view(bot):

@@ -1,8 +1,8 @@
 import os
 
-import undetected_chromedriver as uc
 from django.test.testcases import TransactionTestCase
 from pyvirtualdisplay import Display
+from selenium import webdriver
 
 
 class TestChromeDriver(TransactionTestCase):
@@ -14,16 +14,18 @@ class TestChromeDriver(TransactionTestCase):
 
         try:
             # Set up Chrome options
-            options = uc.ChromeOptions()
+            options = webdriver.ChromeOptions()
+            options.add_argument("--use-fake-ui-for-media-stream")
+            options.add_argument("--start-maximized")
             options.add_argument("--no-sandbox")
-            options.add_argument("--disable-setuid-sandbox")
             options.add_argument("--disable-gpu")
             options.add_argument("--disable-extensions")
             options.add_argument("--disable-application-cache")
+            options.add_argument("--disable-setuid-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-
+            options.add_argument("--disable-blink-features=AutomationControlled")
             # Initialize Chrome driver
-            driver = uc.Chrome(use_subprocess=True, options=options, version_main=133)
+            driver = webdriver.Chrome(options=options)
 
             try:
                 # Load Google

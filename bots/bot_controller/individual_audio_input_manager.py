@@ -1,8 +1,11 @@
+import logging
 import queue
 from datetime import datetime, timedelta
 
 import numpy as np
 import webrtcvad
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_normalized_rms(audio_bytes):
@@ -86,7 +89,7 @@ class IndividualAudioInputManager:
         else:
             self.last_nonsilent_audio_time[speaker_id] = chunk_time
 
-            print(f"Speaker {speaker_id} is speaking")
+            logger.debug(f"Speaker {speaker_id} is speaking")
 
         # Flush buffer if needed
         if should_flush and len(self.utterances[speaker_id]) > 0:
@@ -98,6 +101,7 @@ class IndividualAudioInputManager:
                         "audio_data": bytes(self.utterances[speaker_id]),
                         "timestamp_ms": int(self.first_nonsilent_audio_time[speaker_id].timestamp() * 1000),
                         "flush_reason": reason,
+                        "sample_rate": self.sample_rate,
                     }
                 )
             # Clear the buffer

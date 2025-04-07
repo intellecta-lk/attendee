@@ -127,6 +127,7 @@ class VideoInputStream:
         self.stream_type = stream_type
         self.share_source_id = share_source_id
         self.renderer_destroyed = False
+        self.last_debug_frame_time = None
         self.renderer_delegate = zoom.ZoomSDKRendererDelegateCallbacks(
             onRawDataFrameReceivedCallback=self.on_raw_video_frame_received_callback,
             onRendererBeDestroyedCallback=self.on_renderer_destroyed_callback,
@@ -153,7 +154,6 @@ class VideoInputStream:
         logger.info(f"In VideoInputStream.init self.renderer = {self.renderer}")
         logger.info(f"In VideoInputStream.init set_resolution_result for user {self.user_id} and share source id {self.share_source_id} is {set_resolution_result}")
         logger.info(f"In VideoInputStream.init subscribe_result for user {self.user_id} and share source id {self.share_source_id} is {subscribe_result}")
-        self.last_debug_frame_time = None
 
     def on_raw_data_status_changed_callback(self, status):
         self.raw_data_status = status
@@ -206,7 +206,7 @@ class VideoInputStream:
             return
 
         if self.last_debug_frame_time is None or time.time() - self.last_debug_frame_time > 1:
-            logger.info(f"In VideoInputStream.on_raw_video_frame_received_callback for user {self.user_id} received frame")
+            logger.debug(f"In VideoInputStream.on_raw_video_frame_received_callback for user {self.user_id} received frame")
             self.last_debug_frame_time = time.time()
 
         scaled_i420_frame = scale_i420(data, self.video_input_manager.video_frame_size)
@@ -260,7 +260,7 @@ class VideoInputManager:
         if mode != VideoInputManager.Mode.ACTIVE_SPEAKER and mode != VideoInputManager.Mode.ACTIVE_SHARER:
             raise Exception("Unsupported mode " + str(mode))
 
-        print(f"In VideoInputManager.set_mode mode = {mode} active_speaker_id = {active_speaker_id} active_sharer_id = {active_sharer_id} active_sharer_source_id = {active_sharer_source_id}")
+        logger.info(f"In VideoInputManager.set_mode mode = {mode} active_speaker_id = {active_speaker_id} active_sharer_id = {active_sharer_id} active_sharer_source_id = {active_sharer_source_id}")
 
         self.mode = mode
 

@@ -1,3 +1,6 @@
+import base64
+import logging
+
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import models
 from django.http import HttpResponse
@@ -12,8 +15,15 @@ from .models import (
     Project,
     RecordingStates,
     Utterance,
+    WebhookDeliveryAttempt,
+    WebhookDeliveryAttemptStatus,
+    WebhookSecret,
+    WebhookSubscription,
+    WebhookTriggerTypes,
 )
 from .utils import generate_recordings_json_for_bot_detail_view
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectUrlContextMixin:
@@ -207,6 +217,9 @@ class ProjectBotDetailView(LoginRequiredMixin, ProjectUrlContextMixin, View):
         # Prefetch bot events with their debug screenshots
         bot.bot_events.prefetch_related("debug_screenshots")
 
+        # Get webhook delivery attempts for this bot
+        webhook_delivery_attempts = WebhookDeliveryAttempt.objects.filter(bot=bot).select_related("webhook_subscription").order_by("-created_at")
+
         context = self.get_project_context(object_id, project)
         context.update(
             {
@@ -214,7 +227,75 @@ class ProjectBotDetailView(LoginRequiredMixin, ProjectUrlContextMixin, View):
                 "BotStates": BotStates,
                 "RecordingStates": RecordingStates,
                 "recordings": generate_recordings_json_for_bot_detail_view(bot),
+                "webhook_delivery_attempts": webhook_delivery_attempts,
+                "WebhookDeliveryAttemptStatus": WebhookDeliveryAttemptStatus,
             }
         )
 
         return render(request, "projects/project_bot_detail.html", context)
+
+
+class ProjectWebhooksView(LoginRequiredMixin, ProjectUrlContextMixin, View):
+    def get(self, request, object_id):
+        project = get_object_or_404(Project, object_id=object_id, organization=request.user.organization)
+        context = self.get_project_context(object_id, project)
+        context["webhooks"] = WebhookSubscription.objects.filter(project=project).order_by("-created_at")
+        context["webhook_options"] = [trigger_type for trigger_type in WebhookTriggerTypes]
+        return render(request, "projects/project_webhooks.html", context)
+
+
+class CreateWebhookView(LoginRequiredMixin, ProjectUrlContextMixin, View):
+    def post(self, request, object_id):
+        project = get_object_or_404(Project, object_id=object_id, organization=request.user.organization)
+        url = request.POST.get("url")
+        triggers = request.POST.getlist("triggers[]")
+
+        # Check if URL is valid
+        if not url.startswith("https://"):
+            return HttpResponse("URL must start with https://", status=400)
+        if WebhookSubscription.objects.filter(url=url, project=project).exists():
+            return HttpResponse("URL already subscribed", status=400)
+        # There is a limit of 2 webhooks per projects for now
+        if WebhookSubscription.objects.filter(project=project).count() >= 2:
+            return HttpResponse("You have reached the maximum number of webhooks", status=400)
+
+        # Check the event is subscribable
+        subscribed_triggers = [int(x) for x in triggers]
+        for trigger in subscribed_triggers:
+            if trigger not in [trigger.value for trigger in WebhookTriggerTypes]:
+                return HttpResponse(f"Invalid event type: {trigger}", status=400)
+
+        # Get the project's secret for the webhook subscription. If new project, create a new one
+        webhook_secret, created = WebhookSecret.objects.get_or_create(project=project)
+
+        # Create the webhook subscription
+        WebhookSubscription.objects.create(
+            project=project,
+            url=url,
+            triggers=subscribed_triggers,
+        )
+
+        # Render the success modal content
+        return render(
+            request,
+            "projects/partials/webhook_subscription_created_modal.html",
+            {
+                "secret": base64.b64encode(webhook_secret.get_secret()).decode("utf-8"),
+                "url": url,
+                "triggers": [WebhookTriggerTypes.trigger_type_to_api_code(x) for x in subscribed_triggers],
+            },
+        )
+
+
+class DeleteWebhookView(LoginRequiredMixin, ProjectUrlContextMixin, View):
+    def delete(self, request, object_id, webhook_object_id):
+        webhook = get_object_or_404(
+            WebhookSubscription,
+            object_id=webhook_object_id,
+            project__organization=request.user.organization,
+        )
+        webhook.delete()
+        context = self.get_project_context(object_id, webhook.project)
+        context["webhooks"] = WebhookSubscription.objects.filter(project=webhook.project).order_by("-created_at")
+        context["webhook_options"] = [trigger_type for trigger_type in WebhookTriggerTypes]
+        return render(request, "projects/project_webhooks.html", context)

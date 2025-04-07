@@ -1,9 +1,12 @@
 import gi
 
 gi.require_version("Gst", "1.0")
+import logging
 import time
 
 from gi.repository import GLib, Gst
+
+logger = logging.getLogger(__name__)
 
 
 class GstreamerPipeline:
@@ -11,13 +14,29 @@ class GstreamerPipeline:
     AUDIO_FORMAT_FLOAT = "audio/x-raw,format=F32LE,channels=1,rate=48000,layout=interleaved"
     OUTPUT_FORMAT_FLV = "flv"
     OUTPUT_FORMAT_MP4 = "mp4"
+    OUTPUT_FORMAT_WEBM = "webm"
 
-    def __init__(self, *, on_new_sample_callback, video_frame_size, audio_format, output_format, num_audio_sources):
+    SINK_TYPE_APPSINK = "appsink"
+    SINK_TYPE_FILE = "filesink"
+
+    def __init__(
+        self,
+        *,
+        on_new_sample_callback,
+        video_frame_size,
+        audio_format,
+        output_format,
+        num_audio_sources,
+        sink_type,
+        file_location=None,
+    ):
         self.on_new_sample_callback = on_new_sample_callback
         self.video_frame_size = video_frame_size
         self.audio_format = audio_format
         self.output_format = output_format
         self.num_audio_sources = num_audio_sources
+        self.sink_type = sink_type
+        self.file_location = file_location
 
         self.pipeline = None
         self.appsrc = None
@@ -53,11 +72,22 @@ class GstreamerPipeline:
             muxer_string = "mp4mux name=muxer"
         elif self.output_format == self.OUTPUT_FORMAT_FLV:
             muxer_string = "h264parse ! flvmux name=muxer streamable=true"
+        elif self.output_format == self.OUTPUT_FORMAT_WEBM:
+            muxer_string = "h264parse ! matroskamux name=muxer"
         else:
             raise ValueError(f"Invalid output format: {self.output_format}")
 
+        if self.sink_type == self.SINK_TYPE_APPSINK:
+            sink_string = "appsink name=sink emit-signals=true sync=false drop=false "
+        elif self.sink_type == self.SINK_TYPE_FILE:
+            sink_string = f"filesink location={self.file_location} name=sink sync=false "
+        else:
+            raise ValueError(f"Invalid sink type: {self.sink_type}")
+
         if self.num_audio_sources == 1:
+            # fmt: off
             audio_source_string = (
+                # --- AUDIO STRING FOR 1 AUDIO SOURCE ---
                 "appsrc name=audio_source_1 do-timestamp=false stream-type=0 format=time ! "
                 "queue name=q5 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
                 "audioconvert ! "
@@ -66,23 +96,21 @@ class GstreamerPipeline:
                 "voaacenc bitrate=128000 ! "
                 "queue name=q7 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
             )
+            # fmt: on
         elif self.num_audio_sources == 3:
             audio_source_string = (
                 # --- AUDIO BRANCH 1 ---
                 "appsrc name=audio_source_1 do-timestamp=false stream-type=0 format=time ! "
                 "queue name=q5_1 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
                 "mixer. "
-
                 # --- AUDIO BRANCH 2 ---
                 "appsrc name=audio_source_2 do-timestamp=false stream-type=0 format=time ! "
                 "queue name=q5_2 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
                 "mixer. "
-
                 # --- AUDIO BRANCH 3 ---
                 "appsrc name=audio_source_3 do-timestamp=false stream-type=0 format=time ! "
                 "queue name=q5_3 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
                 "mixer. "
-
                 # --- AUDIO MIXER
                 "adder name=mixer ! "
                 "queue name=mixer_q1 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
@@ -103,7 +131,7 @@ class GstreamerPipeline:
             "queue name=q2 max-size-buffers=5000 max-size-bytes=500000000 max-size-time=0 ! "  # q2 can contain 100mb of video before it drops
             "x264enc tune=zerolatency speed-preset=ultrafast ! "
             "queue name=q3 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! "
-            f"{muxer_string} ! queue name=q4 ! appsink name=sink emit-signals=true sync=false drop=false "
+            f"{muxer_string} ! queue name=q4 ! {sink_string} "
             f"{audio_source_string} "
             "muxer. "
         )
@@ -125,7 +153,7 @@ class GstreamerPipeline:
         audio_caps = Gst.Caps.from_string(self.audio_format)  # e.g. "audio/x-raw,rate=48000,channels=2,format=S16LE"
         self.audio_appsrcs = []
         for i in range(self.num_audio_sources):
-            audio_appsrc = self.pipeline.get_by_name(f"audio_source_{i+1}")
+            audio_appsrc = self.pipeline.get_by_name(f"audio_source_{i + 1}")
             audio_appsrc.set_property("caps", audio_caps)
             audio_appsrc.set_property("format", Gst.Format.TIME)
             audio_appsrc.set_property("is-live", True)
@@ -140,8 +168,9 @@ class GstreamerPipeline:
         bus.connect("message", self.on_pipeline_message)
 
         # Connect to the sink element
-        sink = self.pipeline.get_by_name("sink")
-        sink.connect("new-sample", self.on_new_sample_from_appsink)
+        if self.sink_type == self.SINK_TYPE_APPSINK:
+            sink = self.pipeline.get_by_name("sink")
+            sink.connect("new-sample", self.on_new_sample_from_appsink)
 
         # Start the pipeline
         self.pipeline.set_state(Gst.State.PLAYING)
@@ -171,7 +200,6 @@ class GstreamerPipeline:
         # Start statistics monitoring
         GLib.timeout_add_seconds(15, self.monitor_pipeline_stats)
 
-
     def on_pipeline_message(self, bus, message):
         """Handle pipeline messages"""
         t = message.type
@@ -180,11 +208,9 @@ class GstreamerPipeline:
 
             src = message.src
             src_name = src.name if src else "unknown"
-
-            print(f"GStreamer Error: {err}, Debug: {debug}, src_name: {src_name}")
-
+            logger.info(f"GStreamer Error: {err}, Debug: {debug}, src_name: {src_name}")
         elif t == Gst.MessageType.EOS:
-            print("GStreamer pipeline reached end of stream")
+            logger.info("GStreamer pipeline reached end of stream")
 
     def monitor_pipeline_stats(self):
         """Periodically print pipeline statistics"""
@@ -192,16 +218,15 @@ class GstreamerPipeline:
             return False
 
         try:
-            # Print dropped buffer counts since last check
-            print("\nDropped Buffers Since Last Check:")
+            logger.info("\nDropped Buffers Since Last Check:")
             for queue_name in self.queue_drops:
                 drops = self.queue_drops[queue_name] - self.last_reported_drops[queue_name]
                 if drops > 0:
-                    print(f"  {queue_name}: {drops} buffers dropped")
+                    logger.info(f"  {queue_name}: {drops} buffers dropped")
                 self.last_reported_drops[queue_name] = self.queue_drops[queue_name]
 
         except Exception as e:
-            print(f"Error getting pipeline stats: {e}")
+            logger.info(f"Error getting pipeline stats: {e}")
 
         return True  # Continue timer
 
@@ -210,9 +235,9 @@ class GstreamerPipeline:
         self.queue_drops[queue_name] += 1
         return True
 
-    def on_mixed_audio_raw_data_received_callback(self, data, timestamp=None, audio_appsrc_idx = 0):
+    def on_mixed_audio_raw_data_received_callback(self, data, timestamp=None, audio_appsrc_idx=0):
         audio_appsrc = self.audio_appsrcs[audio_appsrc_idx]
-        
+
         if not self.audio_recording_active or not audio_appsrc or not self.recording_active or not self.appsrc:
             return
 
@@ -230,9 +255,9 @@ class GstreamerPipeline:
 
             ret = audio_appsrc.emit("push-buffer", buffer)
             if ret != Gst.FlowReturn.OK:
-                print(f"Warning: Failed to push audio buffer to pipeline: {ret}")
+                logger.info(f"Warning: Failed to push audio buffer to pipeline: {ret}")
         except Exception as e:
-            print(f"Error processing audio data: {e}")
+            logger.info(f"Error processing audio data: {e}")
 
     def wants_any_video_frames(self):
         if not self.audio_recording_active or not self.audio_appsrcs[0] or not self.recording_active or not self.appsrc:
@@ -259,13 +284,13 @@ class GstreamerPipeline:
             # Push buffer to pipeline
             ret = self.appsrc.emit("push-buffer", buffer)
             if ret != Gst.FlowReturn.OK:
-                print(f"Warning: Failed to push buffer to pipeline: {ret}")
+                logger.info(f"Warning: Failed to push buffer to pipeline: {ret}")
 
         except Exception as e:
-            print(f"Error processing video frame: {e}")
+            logger.info(f"Error processing video frame: {e}")
 
     def cleanup(self):
-        print("Shutting down GStreamer pipeline...")
+        logger.info("Shutting down GStreamer pipeline...")
 
         self.recording_active = False
         self.audio_recording_active = False
@@ -287,7 +312,7 @@ class GstreamerPipeline:
 
         if msg and msg.type == Gst.MessageType.ERROR:
             err, debug = msg.parse_error()
-            print(f"Error during pipeline shutdown: {err}, {debug}")
+            logger.info(f"Error during pipeline shutdown: {err}, {debug}")
 
         self.pipeline.set_state(Gst.State.NULL)
-        print("GStreamer pipeline shut down")
+        logger.info("GStreamer pipeline shut down")

@@ -1,19 +1,24 @@
 import hashlib
 import json
+import math
+import os
 import random
+import secrets
 import string
 
 from concurrency.exceptions import RecordModifiedError
 from concurrency.fields import IntegerVersionField
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
+from django.db.utils import IntegrityError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 
 from accounts.models import Organization
+from bots.webhook_utils import trigger_webhook
 
 # Create your models here.
 
@@ -76,15 +81,22 @@ class ApiKey(models.Model):
         return f"{self.name} ({self.project.name})"
 
 
+class MeetingTypes(models.TextChoices):
+    ZOOM = "zoom"
+    GOOGLE_MEET = "google_meet"
+    TEAMS = "teams"
+
+
 class BotStates(models.IntegerChoices):
     READY = 1, "Ready"
     JOINING = 2, "Joining"
     JOINED_NOT_RECORDING = 3, "Joined - Not Recording"
     JOINED_RECORDING = 4, "Joined - Recording"
     LEAVING = 5, "Leaving"
-    ENDED = 6, "Ended"
+    POST_PROCESSING = 6, "Post Processing"
     FATAL_ERROR = 7, "Fatal Error"
     WAITING_ROOM = 8, "Waiting Room"
+    ENDED = 9, "Ended"
 
     @classmethod
     def state_to_api_code(cls, value):
@@ -95,11 +107,22 @@ class BotStates(models.IntegerChoices):
             cls.JOINED_NOT_RECORDING: "joined_not_recording",
             cls.JOINED_RECORDING: "joined_recording",
             cls.LEAVING: "leaving",
-            cls.ENDED: "ended",
+            cls.POST_PROCESSING: "post_processing",
             cls.FATAL_ERROR: "fatal_error",
             cls.WAITING_ROOM: "waiting_room",
+            cls.ENDED: "ended",
         }
         return mapping.get(value)
+
+
+class RecordingFormats(models.TextChoices):
+    MP4 = "mp4"
+    WEBM = "webm"
+
+
+class RecordingViews(models.TextChoices):
+    SPEAKER_VIEW = "speaker_view"
+    GALLERY_VIEW = "gallery_view"
 
 
 class Bot(models.Model):
@@ -121,11 +144,50 @@ class Bot(models.Model):
 
     settings = models.JSONField(null=False, default=dict)
 
+    first_heartbeat_timestamp = models.IntegerField(null=True, blank=True)
+    last_heartbeat_timestamp = models.IntegerField(null=True, blank=True)
+
+    def set_heartbeat(self):
+        retry_count = 0
+        max_retries = 10
+        while retry_count < max_retries:
+            try:
+                self.refresh_from_db()
+                current_timestamp = int(timezone.now().timestamp())
+                if self.first_heartbeat_timestamp is None:
+                    self.first_heartbeat_timestamp = current_timestamp
+                self.last_heartbeat_timestamp = current_timestamp
+                self.save()
+                return
+            except RecordModifiedError:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    raise
+                continue
+
+    def centicredits_consumed(self) -> int:
+        if self.first_heartbeat_timestamp is None or self.last_heartbeat_timestamp is None:
+            return 0
+        if self.last_heartbeat_timestamp < self.first_heartbeat_timestamp:
+            return 0
+        seconds_active = self.last_heartbeat_timestamp - self.first_heartbeat_timestamp
+        # If first and last heartbeat are the same, we don't know the exact time the bot was active
+        # and that will make a difference to the charge. So we'll assume it ran for 30 seconds
+        if self.last_heartbeat_timestamp == self.first_heartbeat_timestamp:
+            seconds_active = 30
+        hours_active = seconds_active / 3600
+        # The rate is 1 credit per hour
+        centicredits_active = hours_active * 100
+        return math.ceil(centicredits_active)
+
     def deepgram_language(self):
         return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("language", None)
 
     def deepgram_detect_language(self):
         return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("detect_language", None)
+
+    def google_meet_closed_captions_language(self):
+        return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("google_meet_language", None)
 
     def rtmp_destination_url(self):
         rtmp_settings = self.settings.get("rtmp_settings")
@@ -140,6 +202,30 @@ class Bot(models.Model):
 
         return f"{destination_url}/{stream_key}"
 
+    def recording_format(self):
+        recording_settings = self.settings.get("recording_settings", {})
+        if recording_settings is None:
+            recording_settings = {}
+        return recording_settings.get("format", RecordingFormats.MP4)
+
+    def recording_view(self):
+        recording_settings = self.settings.get("recording_settings", {})
+        if recording_settings is None:
+            recording_settings = {}
+        return recording_settings.get("view", RecordingViews.SPEAKER_VIEW)
+
+    def create_debug_recording(self):
+        from bots.utils import meeting_type_from_url
+
+        # Temporarily enabling this for all google meet meetings
+        if meeting_type_from_url(self.meeting_url) == MeetingTypes.GOOGLE_MEET:
+            return True
+
+        debug_settings = self.settings.get("debug_settings", {})
+        if debug_settings is None:
+            debug_settings = {}
+        return debug_settings.get("create_debug_recording", False)
+
     def last_bot_event(self):
         return self.bot_events.order_by("-created_at").first()
 
@@ -153,6 +239,85 @@ class Bot(models.Model):
     def __str__(self):
         return f"{self.object_id} - {self.project.name} in {self.meeting_url}"
 
+    def k8s_pod_name(self):
+        return f"bot-pod-{self.id}-{self.object_id}".lower().replace("_", "-")
+
+
+class CreditTransaction(models.Model):
+    organization = models.ForeignKey(Organization, on_delete=models.PROTECT, null=False, related_name="credit_transactions")
+    created_at = models.DateTimeField(auto_now_add=True)
+    centicredits_before = models.IntegerField(null=False)
+    centicredits_after = models.IntegerField(null=False)
+    centicredits_delta = models.IntegerField(null=False)
+    parent_transaction = models.ForeignKey("self", on_delete=models.PROTECT, null=True, related_name="child_transactions")
+    bot = models.ForeignKey(Bot, on_delete=models.PROTECT, null=True, related_name="credit_transactions")
+    description = models.TextField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["parent_transaction"], name="unique_child_transaction", condition=models.Q(parent_transaction__isnull=False)),
+            models.UniqueConstraint(fields=["organization"], name="unique_root_transaction", condition=models.Q(parent_transaction__isnull=True)),
+            models.UniqueConstraint(fields=["bot"], name="unique_bot_transaction", condition=models.Q(bot__isnull=False)),
+        ]
+
+    def __str__(self):
+        return f"{self.organization.name} - {self.centicredits_delta}"
+
+
+class CreditTransactionManager:
+    @classmethod
+    def create_transaction(cls, organization: Organization, centicredits_delta: int, bot: Bot = None, description: str = None) -> CreditTransaction:
+        """
+        Creates a credit transaction for an organization. If no root transaction exists,
+        creates one first. Otherwise creates a child transaction.
+
+        Args:
+            organization: The Organization instance
+            centicredits_delta: The change in credits (positive for additions, negative for deductions)
+
+        Returns:
+            CreditTransaction instance
+
+        Raises:
+            RuntimeError: If max retries exceeded
+        """
+        max_retries = 10
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                with transaction.atomic():
+                    # Refresh org state from DB
+                    organization.refresh_from_db()
+
+                    # Calculate new credit balance
+                    new_balance = organization.centicredits + centicredits_delta
+
+                    # Find the leaf transaction (one with no child transactions)
+                    leaf_transaction = CreditTransaction.objects.filter(organization=organization, child_transactions__isnull=True).first()
+
+                    credit_transaction = CreditTransaction.objects.create(
+                        organization=organization,
+                        centicredits_before=organization.centicredits,
+                        centicredits_after=new_balance,
+                        centicredits_delta=centicredits_delta,
+                        parent_transaction=leaf_transaction,
+                        bot=bot,
+                        description=description,
+                    )
+
+                    # Update organization's credit balance
+                    organization.centicredits = new_balance
+                    organization.save()
+
+                    return credit_transaction
+
+            except IntegrityError:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    raise RuntimeError("Max retries exceeded while attempting to create credit transaction")
+                continue
+
 
 class BotEventTypes(models.IntegerChoices):
     BOT_PUT_IN_WAITING_ROOM = 1, "Bot Put in Waiting Room"
@@ -164,6 +329,7 @@ class BotEventTypes(models.IntegerChoices):
     FATAL_ERROR = 7, "Bot Encountered Fatal error"
     LEAVE_REQUESTED = 8, "Bot requested to leave meeting"
     COULD_NOT_JOIN = 9, "Bot could not join meeting"
+    POST_PROCESSING_COMPLETED = 10, "Post Processing Completed"
 
     @classmethod
     def type_to_api_code(cls, value):
@@ -178,6 +344,7 @@ class BotEventTypes(models.IntegerChoices):
             cls.FATAL_ERROR: "fatal_error",
             cls.LEAVE_REQUESTED: "leave_requested",
             cls.COULD_NOT_JOIN: "could_not_join_meeting",
+            cls.POST_PROCESSING_COMPLETED: "post_processing_completed",
         }
         return mapping.get(value)
 
@@ -213,6 +380,8 @@ class BotEventSubTypes(models.IntegerChoices):
     LEAVE_REQUESTED_USER_REQUESTED = 10, "Leave requested - User requested"
     LEAVE_REQUESTED_AUTO_LEAVE_SILENCE = 11, "Leave requested - Auto leave silence"
     LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING = 12, "Leave requested - Auto leave only participant in meeting"
+    FATAL_ERROR_HEARTBEAT_TIMEOUT = 13, "Fatal error - Heartbeat timeout"
+    COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND = 14, "Bot could not join meeting - Meeting not found"
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -230,6 +399,8 @@ class BotEventSubTypes(models.IntegerChoices):
             cls.LEAVE_REQUESTED_USER_REQUESTED: "user_requested",
             cls.LEAVE_REQUESTED_AUTO_LEAVE_SILENCE: "auto_leave_silence",
             cls.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING: "auto_leave_only_participant_in_meeting",
+            cls.FATAL_ERROR_HEARTBEAT_TIMEOUT: "heartbeat_timeout",
+            cls.COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND: "meeting_not_found",
         }
         return mapping.get(value)
 
@@ -270,10 +441,10 @@ class BotEvent(models.Model):
             models.CheckConstraint(
                 check=(
                     # For FATAL_ERROR event type, must have one of the valid event subtypes
-                    (Q(event_type=BotEventTypes.FATAL_ERROR) & (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_UI_ELEMENT_NOT_FOUND)))
+                    (Q(event_type=BotEventTypes.FATAL_ERROR) & (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_UI_ELEMENT_NOT_FOUND) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_HEARTBEAT_TIMEOUT)))
                     |
                     # For COULD_NOT_JOIN event type, must have one of the valid event subtypes
-                    (Q(event_type=BotEventTypes.COULD_NOT_JOIN) & (Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_REQUEST_TO_JOIN_DENIED)))
+                    (Q(event_type=BotEventTypes.COULD_NOT_JOIN) & (Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_REQUEST_TO_JOIN_DENIED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND)))
                     |
                     # For LEAVE_REQUESTED event type, must have one of the valid event subtypes or be null (for backwards compatibility, this will eventually be removed)
                     (Q(event_type=BotEventTypes.LEAVE_REQUESTED) & (Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_USER_REQUESTED) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_SILENCE) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING) | Q(event_sub_type__isnull=True)))
@@ -287,8 +458,9 @@ class BotEvent(models.Model):
 
 
 class BotEventManager:
-    # Define valid state transitions for each event type
+    TERMINAL_STATES = [BotStates.FATAL_ERROR, BotStates.ENDED]
 
+    # Define valid state transitions for each event type
     VALID_TRANSITIONS = {
         BotEventTypes.JOIN_REQUESTED: {
             "from": BotStates.READY,
@@ -328,7 +500,7 @@ class BotEventManager:
                 BotStates.JOINING,
                 BotStates.LEAVING,
             ],
-            "to": BotStates.ENDED,
+            "to": BotStates.POST_PROCESSING,
         },
         BotEventTypes.LEAVE_REQUESTED: {
             "from": [
@@ -341,6 +513,10 @@ class BotEventManager:
         },
         BotEventTypes.BOT_LEFT_MEETING: {
             "from": BotStates.LEAVING,
+            "to": BotStates.POST_PROCESSING,
+        },
+        BotEventTypes.POST_PROCESSING_COMPLETED: {
+            "from": BotStates.POST_PROCESSING,
             "to": BotStates.ENDED,
         },
     }
@@ -375,7 +551,15 @@ class BotEventManager:
 
     @classmethod
     def is_terminal_state(cls, state: int):
-        return state == BotStates.ENDED or state == BotStates.FATAL_ERROR
+        return state in cls.TERMINAL_STATES
+
+    @classmethod
+    def get_terminal_states_q_filter(cls):
+        """Returns a Q object to filter for terminal states"""
+        q_filter = models.Q()
+        for state in cls.TERMINAL_STATES:
+            q_filter |= models.Q(state=state)
+        return q_filter
 
     @classmethod
     def create_event(
@@ -425,10 +609,7 @@ class BotEventManager:
 
                     if old_state not in valid_from_states:
                         valid_states_labels = [BotStates.state_to_api_code(state) for state in valid_from_states]
-                        raise ValidationError(
-                            f"Event {BotEventTypes.type_to_api_code(event_type)} not allowed when bot is in state {BotStates.state_to_api_code(old_state)}. "
-                            f"It is only allowed in these states: {', '.join(valid_states_labels)}"
-                        )
+                        raise ValidationError(f"Event {BotEventTypes.type_to_api_code(event_type)} not allowed when bot is in state {BotStates.state_to_api_code(old_state)}. It is only allowed in these states: {', '.join(valid_states_labels)}")
 
                     # Update bot state based on 'to' definition
                     new_state = transition["to"]
@@ -467,6 +648,29 @@ class BotEventManager:
                             raise ValidationError(f"Expected at most one in progress recording for bot {bot.object_id} in state {BotStates.state_to_api_code(new_state)}, but found {in_progress_recordings.count()}")
                         for recording in in_progress_recordings:
                             RecordingManager.set_recording_complete(recording)
+
+                        if os.getenv("CHARGE_CREDITS_FOR_BOTS") == "true":
+                            centicredits_consumed = bot.centicredits_consumed()
+                            if centicredits_consumed > 0:
+                                CreditTransactionManager.create_transaction(
+                                    organization=bot.project.organization,
+                                    centicredits_delta=-centicredits_consumed,
+                                    bot=bot,
+                                    description=f"For bot {bot.object_id}",
+                                )
+
+                    # Trigger webhook for this event
+                    trigger_webhook(
+                        webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE,
+                        bot=bot,
+                        payload={
+                            "event_type": BotEventTypes.type_to_api_code(event_type),
+                            "event_sub_type": BotEventSubTypes.sub_type_to_api_code(event_sub_type),
+                            "old_state": BotStates.state_to_api_code(old_state),
+                            "new_state": BotStates.state_to_api_code(bot.state),
+                            "created_at": event.created_at.isoformat(),
+                        },
+                    )
 
                     return event
 
@@ -716,6 +920,7 @@ class Utterance(models.Model):
     duration_ms = models.IntegerField()
     transcription = models.JSONField(null=True, default=None)
     source_uuid = models.CharField(max_length=255, null=True, unique=True)
+    sample_rate = models.IntegerField(null=True, default=None)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -980,3 +1185,95 @@ class BotDebugScreenshot(models.Model):
 
     def __str__(self):
         return f"Debug Screenshot {self.object_id} for event {self.bot_event}"
+
+
+class WebhookSecret(models.Model):
+    _secret = models.BinaryField(
+        null=True,
+        editable=False,  # Prevents editing through admin/forms
+    )
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="webhook_secrets")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def get_secret(self):
+        """Decrypt and return secret"""
+        if not self._secret:
+            return None
+        try:
+            f = Fernet(settings.CREDENTIALS_ENCRYPTION_KEY)
+            decrypted_data = f.decrypt(bytes(self._secret))
+            return decrypted_data
+        except (InvalidToken, ValueError):
+            return None
+
+    def save(self, *args, **kwargs):
+        # Only generate a secret if this is a new object (not yet saved to DB)
+        if not self.pk and not self._secret:
+            secret = secrets.token_bytes(32)
+            f = Fernet(settings.CREDENTIALS_ENCRYPTION_KEY)
+            self._secret = f.encrypt(secret)
+        super().save(*args, **kwargs)
+
+
+class WebhookTriggerTypes(models.IntegerChoices):
+    BOT_STATE_CHANGE = 1, "Bot State Change"
+    # add other event types here
+
+    @classmethod
+    def trigger_type_to_api_code(cls, value):
+        mapping = {
+            cls.BOT_STATE_CHANGE: "bot.state_change",
+        }
+        return mapping.get(value)
+
+
+class WebhookSubscription(models.Model):
+    def default_triggers():
+        return [WebhookTriggerTypes.BOT_STATE_CHANGE]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="webhook_subscriptions")
+
+    OBJECT_ID_PREFIX = "webhook_"
+    object_id = models.CharField(max_length=32, unique=True, editable=False)
+
+    def save(self, *args, **kwargs):
+        if not self.object_id:
+            # Generate a random 16-character string
+            random_string = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+            self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
+        super().save(*args, **kwargs)
+
+    url = models.URLField()
+    triggers = models.JSONField(default=default_triggers)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class WebhookDeliveryAttemptStatus(models.IntegerChoices):
+    PENDING = 1, "Pending"
+    SUCCESS = 2, "Success"
+    FAILURE = 3, "Failure"
+
+
+class WebhookDeliveryAttempt(models.Model):
+    webhook_subscription = models.ForeignKey(WebhookSubscription, on_delete=models.CASCADE, related_name="webhookdelivery_attempts")
+    webhook_trigger_type = models.IntegerField(choices=WebhookTriggerTypes.choices, default=WebhookTriggerTypes.BOT_STATE_CHANGE, null=False)
+    idempotency_key = models.UUIDField(unique=True, editable=False)
+    bot = models.ForeignKey(Bot, on_delete=models.SET_NULL, null=True, related_name="webhook_delivery_attempts")
+    payload = models.JSONField(default=dict)
+    status = models.IntegerField(choices=WebhookDeliveryAttemptStatus.choices, default=WebhookDeliveryAttemptStatus.PENDING, null=False)
+    attempt_count = models.IntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    succeeded_at = models.DateTimeField(null=True, blank=True)
+    response_body_list = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def add_to_response_body_list(self, response_body):
+        """Add content to the response body list without saving."""
+        if self.response_body_list is None:
+            self.response_body_list = [response_body]
+        else:
+            self.response_body_list.append(response_body)

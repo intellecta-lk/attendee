@@ -5,6 +5,8 @@ from queue import Queue
 
 import boto3
 
+logger = logging.getLogger(__name__)
+
 
 class StreamingUploader:
     def __init__(self, bucket, key, chunk_size=5242880):  # 5MB chunks
@@ -67,7 +69,7 @@ class StreamingUploader:
             self.buffer.seek(0)
             data = self.buffer.getvalue()
             self.s3_client.put_object(Bucket=self.bucket, Key=self.key, Body=data)
-            print("len(self.parts) == 0, so did a regular upload")
+            logger.info("len(self.parts) == 0, so did a regular upload")
             return
 
         # Upload final part if any data remains

@@ -1,4 +1,7 @@
+import logging
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 class RTMPClient:
@@ -43,10 +46,10 @@ class RTMPClient:
                 bufsize=10**8,
             )
             self.is_running = True
-            print(f"FFmpeg RTMP client started with PID {self.ffmpeg_process.pid}")
+            logger.info(f"FFmpeg RTMP client started with PID {self.ffmpeg_process.pid}")
             return True
         except Exception as e:
-            print(f"Failed to start FFmpeg process: {e}")
+            logger.info(f"Failed to start FFmpeg process: {e}")
             return False
 
     def write_data(self, flv_data):
@@ -67,11 +70,11 @@ class RTMPClient:
             self.ffmpeg_process.stdin.flush()
             return True
         except BrokenPipeError:
-            print("FFmpeg pipe broken - stream may have failed")
+            logger.info("FFmpeg pipe broken - stream may have failed")
             self.is_running = False
             return False
         except Exception as e:
-            print(f"Error writing data to FFmpeg: {e}")
+            logger.info(f"Error writing data to FFmpeg: {e}")
             self.is_running = False
             return False
 
@@ -85,7 +88,7 @@ class RTMPClient:
                 self.ffmpeg_process.terminate()
                 self.ffmpeg_process.wait(timeout=5.0)
             except Exception as e:
-                print(f"Error stopping FFmpeg process: {e}")
+                logger.info(f"Error stopping FFmpeg process: {e}")
                 # Force kill if graceful shutdown fails
                 try:
                     self.ffmpeg_process.kill()

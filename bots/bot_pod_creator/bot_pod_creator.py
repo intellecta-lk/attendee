@@ -1,7 +1,10 @@
-from kubernetes import client, config
-from typing import Optional, Dict, List
-import uuid
 import os
+import uuid
+from typing import Dict, Optional
+
+from kubernetes import client, config
+
+# fmt: off
 
 class BotPodCreator:
     def __init__(self, namespace: str = "attendee"):
@@ -40,8 +43,9 @@ class BotPodCreator:
             bot_name = f"bot-{bot_id}-{uuid.uuid4().hex[:8]}"
 
         # Set the command based on bot_id
-        # python manage.py run_bot --botid
-        command = ["python", "manage.py", "run_bot", "--botid", str(bot_id)]
+        # Run entrypoint script first, then the bot command
+        bot_cmd = f"python manage.py run_bot --botid {bot_id}"
+        command = ["/bin/bash", "-c", f"/opt/bin/entrypoint.sh && {bot_cmd}"]
 
         # Metadata labels matching the deployment
         labels = {
@@ -68,13 +72,16 @@ class BotPodCreator:
                         resources=client.V1ResourceRequirements(
                             requests={
                                 "cpu": "4",
-                                "memory": "4Gi"
+                                "memory": "4Gi",
+                                "ephemeral-storage": "10Gi"
                             },
                             limits={
-                                "memory": "4Gi"
+                                "memory": "4Gi",
+                                "ephemeral-storage": "10Gi"
                             }
                         ),
                         env_from=[
+                            # environment variables for the bot
                             client.V1EnvFromSource(
                                 config_map_ref=client.V1ConfigMapEnvSource(
                                     name="env"
@@ -135,3 +142,5 @@ class BotPodCreator:
                 "deleted": False,
                 "error": str(e)
             }
+
+# fmt: on

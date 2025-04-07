@@ -1,5 +1,6 @@
 import uuid
 
+from concurrency.fields import IntegerVersionField
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -8,6 +9,10 @@ class Organization(models.Model):
     name = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # These represent hundredths of a credit
+    centicredits = models.IntegerField(default=500, null=False)
+    version = IntegerVersionField()
+    is_webhooks_enabled = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name

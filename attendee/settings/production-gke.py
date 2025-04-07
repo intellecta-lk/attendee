@@ -1,4 +1,7 @@
+import os
+
 import dj_database_url
+
 from .base import *
 
 DEBUG = False
@@ -41,27 +44,26 @@ if os.getenv("ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS"):
 SERVER_EMAIL = "noreply@mail.attendee.dev"
 
 # Needed on GKE
-CSRF_TRUSTED_ORIGINS = ['https://*.attendee.dev']
+CSRF_TRUSTED_ORIGINS = ["https://*.attendee.dev"]
 
 # Log more stuff in staging
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
         },
     },
-    'root': {
-        'handlers': ['console'],
-        'level': 'INFO',
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
     },
-    'loggers': {
-        'django': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
         },
     },
 }
-
