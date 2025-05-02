@@ -33,6 +33,7 @@ class WebBotAdapter(BotAdapter):
         meeting_url,
         add_video_frame_callback,
         wants_any_video_frames_callback,
+        add_audio_chunk_callback,
         add_mixed_audio_chunk_callback,
         add_encoded_mp4_chunk_callback,
         upsert_caption_callback,
@@ -44,6 +45,7 @@ class WebBotAdapter(BotAdapter):
     ):
         self.display_name = display_name
         self.send_message_callback = send_message_callback
+        self.add_audio_chunk_callback = add_audio_chunk_callback
         self.add_mixed_audio_chunk_callback = add_mixed_audio_chunk_callback
         self.add_video_frame_callback = add_video_frame_callback
         self.wants_any_video_frames_callback = wants_any_video_frames_callback
@@ -82,6 +84,9 @@ class WebBotAdapter(BotAdapter):
 
         self.should_create_debug_recording = should_create_debug_recording
         self.debug_screen_recorder = None
+
+        self.silence_detection_activated = False
+        self.joined_at = None
 
     def process_encoded_mp4_chunk(self, message):
         self.last_media_message_processed_time = time.time()
@@ -133,7 +138,8 @@ class WebBotAdapter(BotAdapter):
             else:
                 logger.info(f"video data length does not agree with width and height {len(video_data)} {width} {height}")
 
-    def process_audio_frame(self, message):
+    # Currently, this is not used.
+    def process_mixed_audio_frame(self, message):
         self.last_media_message_processed_time = time.time()
         if len(message) > 12:
             # Bytes 4-12 contain the timestamp
@@ -151,6 +157,21 @@ class WebBotAdapter(BotAdapter):
 
             if self.wants_any_video_frames_callback() and self.send_frames:
                 self.add_mixed_audio_chunk_callback(audio_data.tobytes(), timestamp * 1000, stream_id % 3)
+
+    def process_per_participant_audio_frame(self, message):
+        self.last_media_message_processed_time = time.time()
+        if len(message) > 12:
+            # Byte 5 contains the participant ID length
+            participant_id_length = int.from_bytes(message[4:5], byteorder="little")
+            participant_id = message[5 : 5 + participant_id_length].decode("utf-8")
+
+            # Convert the float32 audio data to numpy array
+            audio_data = np.frombuffer(message[(5 + participant_id_length) :], dtype=np.float32)
+
+            # Convert float32 to PCM 16-bit by multiplying by 32768.0
+            audio_data = (audio_data * 32768.0).astype(np.int16)
+
+            self.add_audio_chunk_callback(participant_id, datetime.datetime.utcnow(), audio_data.tobytes())
 
     def handle_websocket(self, websocket):
         audio_format = None
@@ -208,13 +229,16 @@ class WebBotAdapter(BotAdapter):
                 elif message_type == 2:  # VIDEO
                     self.process_video_frame(message)
                 elif message_type == 3:  # AUDIO
-                    self.process_audio_frame(message)
+                    self.process_mixed_audio_frame(message)
                 elif message_type == 4:  # ENCODED_MP4_CHUNK
                     self.process_encoded_mp4_chunk(message)
+                elif message_type == 5:  # PER_PARTICIPANT_AUDIO
+                    self.process_per_participant_audio_frame(message)
 
                 self.last_websocket_message_processed_time = time.time()
         except Exception as e:
             logger.info(f"Websocket error: {e}")
+            raise e
 
     def run_websocket_server(self):
         loop = asyncio.new_event_loop()
@@ -288,6 +312,8 @@ class WebBotAdapter(BotAdapter):
     def init_driver(self):
         options = webdriver.ChromeOptions()
 
+        options.add_argument("--autoplay-policy=no-user-gesture-required")
+        options.add_argument("--use-fake-device-for-media-stream")
         options.add_argument("--use-fake-ui-for-media-stream")
         options.add_argument(f"--window-size={self.video_frame_size[0]},{self.video_frame_size[1]}")
         options.add_argument("--no-sandbox")
@@ -317,7 +343,7 @@ class WebBotAdapter(BotAdapter):
         self.driver = webdriver.Chrome(options=options)
         logger.info(f"web driver server initialized at port {self.driver.service.port}")
 
-        initial_data_code = f"window.initialData = {{websocketPort: {self.websocket_port}, addClickRipple: {'true' if self.should_create_debug_recording else 'false'}, recordingView: '{self.recording_view}'}}"
+        initial_data_code = f"window.initialData = {{websocketPort: {self.websocket_port}, botName: {json.dumps(self.display_name)}, addClickRipple: {'true' if self.should_create_debug_recording else 'false'}, recordingView: '{self.recording_view}', sendPerParticipantAudio: {'true' if self.add_audio_chunk_callback else 'false'}, collectCaptions: {'false' if self.add_audio_chunk_callback else 'true'}}}"
 
         # Define the CDN libraries needed
         CDN_LIBRARIES = ["https://cdnjs.cloudflare.com/ajax/libs/protobufjs/7.4.0/protobuf.min.js", "https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"]
@@ -376,7 +402,7 @@ class WebBotAdapter(BotAdapter):
         # Expected exceptions are ones that we expect to happen and are not a big deal, so we only increment num_retries once every three expected exceptions
         num_expected_exceptions = 0
         num_retries = 0
-        max_retries = 2
+        max_retries = 3
         while num_retries <= max_retries:
             try:
                 self.init_driver()
@@ -399,10 +425,12 @@ class WebBotAdapter(BotAdapter):
                     return
 
                 num_expected_exceptions += 1
-                if num_expected_exceptions % 3 == 0:
+                if num_expected_exceptions % 5 == 0:
                     num_retries += 1
-                    logger.info(f"Failed to join meeting and the {e.__class__.__name__} exception is expected and {num_expected_exceptions} expected exceptions have occurred, so incrementing num_retries. This usually indicates that the meeting has not started yet, so we will wait for the configured amount of time which is {self.automatic_leave_configuration.wait_for_host_to_start_meeting_timeout_seconds} seconds before retrying")
-                    sleep(self.automatic_leave_configuration.wait_for_host_to_start_meeting_timeout_seconds)
+                    logger.info(f"Failed to join meeting and the {e.__class__.__name__} exception is expected and {num_expected_exceptions} expected exceptions have occurred, so incrementing num_retries. This usually indicates that the meeting has not started yet, so we will wait for the configured amount of time which is 180 seconds before retrying")
+                    # We're going to start a new pod to see if that fixes the issue
+                    self.send_message_callback({"message": self.Messages.BLOCKED_BY_GOOGLE_REPEATEDLY})
+                    return
                 else:
                     logger.info(f"Failed to join meeting and the {e.__class__.__name__} exception is expected so not incrementing num_retries, but {num_expected_exceptions} expected exceptions have occurred")
 
@@ -428,6 +456,7 @@ class WebBotAdapter(BotAdapter):
         self.send_frames = True
         self.driver.execute_script("window.ws?.enableMediaSending();")
         self.first_buffer_timestamp_ms_offset = self.driver.execute_script("return performance.timeOrigin;")
+        self.joined_at = time.time()
 
         if self.start_recording_screen_callback:
             sleep(2)
@@ -499,9 +528,6 @@ class WebBotAdapter(BotAdapter):
 
         self.cleaned_up = True
 
-    def get_first_buffer_timestamp_ms_offset(self):
-        return self.first_buffer_timestamp_ms_offset
-
     def check_auto_leave_conditions(self) -> None:
         if self.left_meeting:
             return
@@ -514,14 +540,40 @@ class WebBotAdapter(BotAdapter):
                 self.send_message_callback({"message": self.Messages.ADAPTER_REQUESTED_BOT_LEAVE_MEETING, "leave_reason": BotAdapter.LEAVE_REASON.AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING})
                 return
 
-        if self.last_audio_message_processed_time is not None:
+        if not self.silence_detection_activated and self.joined_at is not None and time.time() - self.joined_at > self.automatic_leave_configuration.silence_activate_after_seconds:
+            self.silence_detection_activated = True
+            self.last_audio_message_processed_time = time.time()
+            logger.info(f"Silence detection activated after {self.automatic_leave_configuration.silence_activate_after_seconds} seconds")
+
+        if self.last_audio_message_processed_time is not None and self.silence_detection_activated:
             if time.time() - self.last_audio_message_processed_time > self.automatic_leave_configuration.silence_threshold_seconds:
                 logger.info(f"Auto-leaving meeting because there was no audio for {self.automatic_leave_configuration.silence_threshold_seconds} seconds")
                 self.send_message_callback({"message": self.Messages.ADAPTER_REQUESTED_BOT_LEAVE_MEETING, "leave_reason": BotAdapter.LEAVE_REASON.AUTO_LEAVE_SILENCE})
                 return
 
+    def ready_to_show_bot_image(self):
+        self.send_message_callback({"message": self.Messages.READY_TO_SHOW_BOT_IMAGE})
+
     def send_raw_audio(self, bytes, sample_rate):
-        logger.info("send_raw_audio not supported in google meet bots")
+        logger.info("send_raw_audio not supported in web bots")
+
+    def get_first_buffer_timestamp_ms(self):
+        if self.media_sending_enable_timestamp_ms is None:
+            return None
+        # Doing a manual offset for now to correct for the screen recorder delay. This seems to work reliably.
+        return self.media_sending_enable_timestamp_ms
 
     def send_raw_image(self, image_bytes):
-        logger.info("send_raw_image not supported in google meet bots")
+        # If we have a memoryview, convert it to bytes
+        if isinstance(image_bytes, memoryview):
+            image_bytes = image_bytes.tobytes()
+
+        # Pass the raw bytes directly to JavaScript
+        # The JavaScript side can convert it to appropriate format
+        self.driver.execute_script(
+            """
+            const bytes = new Uint8Array(arguments[0]);
+            window.botOutputManager.displayImage(bytes);
+        """,
+            list(image_bytes),
+        )

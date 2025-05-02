@@ -1,12 +1,12 @@
 import base64
 import json
-import os
 import threading
 import time
 from unittest.mock import MagicMock, call, patch
 
 import zoom_meeting_sdk as zoom
 from django.db import connection
+from django.test import override_settings
 from django.test.testcases import TransactionTestCase
 
 from bots.bot_controller import BotController
@@ -39,6 +39,19 @@ from bots.models import (
 from bots.utils import mp3_to_pcm, png_to_yuv420_frame, scale_i420
 
 from .mock_data import MockPCMAudioFrame, MockVideoFrame
+
+
+def mock_file_field_delete_sets_name_to_none(instance, save=True):
+    """
+    A side_effect function for mocking FieldFile.delete.
+    Sets the FieldFile's name to None and saves the parent model instance.
+    """
+    # 'instance' here is the FieldFile instance being deleted
+    instance.name = None
+    if save:
+        # instance.instance refers to the model instance (e.g., Recording)
+        # that owns this FieldFile.
+        instance.instance.save()
 
 
 def create_mock_file_uploader():
@@ -304,9 +317,20 @@ class TestZoomBot(TransactionTestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        # Set required environment variables
-        os.environ["AWS_RECORDING_STORAGE_BUCKET_NAME"] = "test-bucket"
-        os.environ["CHARGE_CREDITS_FOR_BOTS"] = "true"
+        # Instead of setting environment variables directly:
+        # os.environ["AWS_RECORDING_STORAGE_BUCKET_NAME"] = "test-bucket"
+        # os.environ["CHARGE_CREDITS_FOR_BOTS"] = "true"
+
+        # The settings have already been loaded, so we need to override them
+        # These will be applied to all tests in this class
+        cls.settings_override = override_settings(AWS_RECORDING_STORAGE_BUCKET_NAME="test-bucket", CHARGE_CREDITS_FOR_BOTS=True)
+        cls.settings_override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        # Clean up the settings override when done
+        cls.settings_override.disable()
+        super().tearDownClass()
 
     def setUp(self):
         # Recreate organization and project for each test
@@ -579,12 +603,18 @@ class TestZoomBot(TransactionTestCase):
                 2,  # Simulated participant ID that's not the bot
             )
 
-            # Advance time past silence threshold (300 seconds)
+            # Advance time past silence activation threshold (1200 seconds)
             nonlocal current_time
-            current_time += 301
+            current_time += 1201
             mock_time.return_value = current_time
 
-            # Trigger check of auto-leave conditions
+            # Trigger check of auto-leave conditions which should activate silence detection
+            adapter.check_auto_leave_conditions()
+
+            current_time += 601
+            mock_time.return_value = current_time
+
+            # Trigger check of auto-leave conditions which should trigger auto-leave
             adapter.check_auto_leave_conditions()
 
             # Sleep to allow for event processing
@@ -617,6 +647,10 @@ class TestZoomBot(TransactionTestCase):
 
         # Assert that the bot is in the ENDED state
         self.assertEqual(self.bot.state, BotStates.ENDED)
+
+        # Assert that silence detection was activated
+        self.assertTrue(controller.adapter.silence_detection_activated)
+        self.assertIsNotNone(controller.adapter.joined_at)
 
         # Verify bot events in sequence
         bot_events = self.bot.bot_events.all()
@@ -685,8 +719,10 @@ class TestZoomBot(TransactionTestCase):
     @patch("bots.bot_controller.bot_controller.FileUploader")
     @patch("deepgram.DeepgramClient")
     @patch("google.cloud.texttospeech.TextToSpeechClient")
+    @patch("django.db.models.fields.files.FieldFile.delete", autospec=True)
     def test_bot_can_join_meeting_and_record_audio_and_video(
         self,
+        mock_delete_file_field,
         MockTextToSpeechClient,
         MockDeepgramClient,
         MockFileUploader,
@@ -694,6 +730,8 @@ class TestZoomBot(TransactionTestCase):
         mock_zoom_sdk_adapter,
         mock_zoom_sdk_video,
     ):
+        mock_delete_file_field.side_effect = mock_file_field_delete_sets_name_to_none
+
         self.bot.settings = {
             "recording_settings": {
                 "format": RecordingFormats.MP4,
@@ -998,6 +1036,33 @@ class TestZoomBot(TransactionTestCase):
 
         # Close the database connection since we're in a thread
         connection.close()
+
+        # Verify that the bot has participants
+        self.assertEqual(self.bot.participants.count(), 1)
+
+        # Delete the bot data
+        self.bot.delete_data()
+
+        # Verify data was properly deleted
+        # Refresh bot from database to get latest state
+        self.bot.refresh_from_db()
+
+        # 1. Verify all participants were deleted
+        self.assertEqual(self.bot.participants.count(), 0, "Participants were not deleted")
+
+        # 2. Verify all utterances for all recordings were deleted
+        for recording in self.bot.recordings.all():
+            self.assertEqual(recording.utterances.count(), 0, f"Utterances for recording {recording.id} were not deleted")
+
+        # 3. Verify recording files were deleted (if they existed)
+        for recording in self.bot.recordings.all():
+            self.assertFalse(recording.file.name, f"Recording file for recording {recording.id} was not deleted")
+
+        # 4. Verify a DATA_DELETED event was created
+        self.assertTrue(self.bot.bot_events.filter(event_type=BotEventTypes.DATA_DELETED).exists(), "DATA_DELETED event was not created")
+
+        # 5. Verify that the bot is in the DATA_DELETED state
+        self.assertEqual(self.bot.state, BotStates.DATA_DELETED)
 
     @patch(
         "bots.zoom_bot_adapter.video_input_manager.zoom",
@@ -1731,6 +1796,10 @@ class TestZoomBot(TransactionTestCase):
             fatal_error_event.metadata,
             {"rtmp_destination_url": "rtmp://example.com/live/stream/1234"},
         )
+
+        # Verify that the bot did not incur charges
+        credit_transaction = CreditTransaction.objects.filter(bot=self.bot).first()
+        self.assertIsNone(credit_transaction, "A credit transaction was created for the bot")
 
     @patch(
         "bots.zoom_bot_adapter.video_input_manager.zoom",

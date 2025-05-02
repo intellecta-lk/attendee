@@ -14,6 +14,8 @@ class BotAdapter:
         REQUEST_TO_JOIN_DENIED = "Request to join denied"
         ADAPTER_REQUESTED_BOT_LEAVE_MEETING = "Adapter requested bot leave meeting"
         MEETING_NOT_FOUND = "Meeting not found"
+        READY_TO_SHOW_BOT_IMAGE = "Ready to show bot image"
+        BLOCKED_BY_GOOGLE_REPEATEDLY = "Blocked by Google repeatedly"
 
     class LEAVE_REASON:
         AUTO_LEAVE_SILENCE = "AUTO_LEAVE_SILENCE"

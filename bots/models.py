@@ -1,7 +1,6 @@
 import hashlib
 import json
 import math
-import os
 import random
 import secrets
 import string
@@ -97,6 +96,7 @@ class BotStates(models.IntegerChoices):
     FATAL_ERROR = 7, "Fatal Error"
     WAITING_ROOM = 8, "Waiting Room"
     ENDED = 9, "Ended"
+    DATA_DELETED = 10, "Data Deleted"
 
     @classmethod
     def state_to_api_code(cls, value):
@@ -111,6 +111,7 @@ class BotStates(models.IntegerChoices):
             cls.FATAL_ERROR: "fatal_error",
             cls.WAITING_ROOM: "waiting_room",
             cls.ENDED: "ended",
+            cls.DATA_DELETED: "data_deleted",
         }
         return mapping.get(value)
 
@@ -143,9 +144,30 @@ class Bot(models.Model):
     state = models.IntegerField(choices=BotStates.choices, default=BotStates.READY, null=False)
 
     settings = models.JSONField(null=False, default=dict)
+    metadata = models.JSONField(null=True, blank=True)
 
     first_heartbeat_timestamp = models.IntegerField(null=True, blank=True)
     last_heartbeat_timestamp = models.IntegerField(null=True, blank=True)
+
+    def delete_data(self):
+        # Check if bot is in a state where the data deleted event can be created
+        if not BotEventManager.event_can_be_created_for_state(BotEventTypes.DATA_DELETED, self.state):
+            raise ValueError("Bot is not in a state where the data deleted event can be created")
+
+        with transaction.atomic():
+            # Delete all utterances and recording files for each recording
+            for recording in self.recordings.all():
+                # Delete all utterances first
+                recording.utterances.all().delete()
+
+                # Delete the actual recording file if it exists
+                if recording.file and recording.file.name:
+                    recording.file.delete()
+
+            # Delete all participants
+            self.participants.all().delete()
+
+            BotEventManager.create_event(bot=self, event_type=BotEventTypes.DATA_DELETED)
 
     def set_heartbeat(self):
         retry_count = 0
@@ -179,6 +201,18 @@ class Bot(models.Model):
         # The rate is 1 credit per hour
         centicredits_active = hours_active * 100
         return math.ceil(centicredits_active)
+
+    def openai_transcription_prompt(self):
+        return self.settings.get("transcription_settings", {}).get("openai", {}).get("prompt", None)
+
+    def openai_transcription_model(self):
+        return self.settings.get("transcription_settings", {}).get("openai", {}).get("model", "gpt-4o-transcribe")
+
+    def gladia_code_switching_languages(self):
+        return self.settings.get("transcription_settings", {}).get("gladia", {}).get("code_switching_languages", None)
+
+    def gladia_enable_code_switching(self):
+        return self.settings.get("transcription_settings", {}).get("gladia", {}).get("enable_code_switching", False)
 
     def deepgram_language(self):
         return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("language", None)
@@ -251,6 +285,7 @@ class CreditTransaction(models.Model):
     centicredits_delta = models.IntegerField(null=False)
     parent_transaction = models.ForeignKey("self", on_delete=models.PROTECT, null=True, related_name="child_transactions")
     bot = models.ForeignKey(Bot, on_delete=models.PROTECT, null=True, related_name="credit_transactions")
+    stripe_payment_intent_id = models.CharField(max_length=255, null=True, blank=True)
     description = models.TextField(null=True, blank=True)
 
     class Meta:
@@ -258,15 +293,25 @@ class CreditTransaction(models.Model):
             models.UniqueConstraint(fields=["parent_transaction"], name="unique_child_transaction", condition=models.Q(parent_transaction__isnull=False)),
             models.UniqueConstraint(fields=["organization"], name="unique_root_transaction", condition=models.Q(parent_transaction__isnull=True)),
             models.UniqueConstraint(fields=["bot"], name="unique_bot_transaction", condition=models.Q(bot__isnull=False)),
+            models.UniqueConstraint(fields=["stripe_payment_intent_id"], name="unique_stripe_payment_intent_id", condition=models.Q(stripe_payment_intent_id__isnull=False)),
         ]
 
     def __str__(self):
         return f"{self.organization.name} - {self.centicredits_delta}"
 
+    def credits_delta(self):
+        return self.centicredits_delta / 100
+
+    def credits_after(self):
+        return self.centicredits_after / 100
+
+    def credits_before(self):
+        return self.centicredits_before / 100
+
 
 class CreditTransactionManager:
     @classmethod
-    def create_transaction(cls, organization: Organization, centicredits_delta: int, bot: Bot = None, description: str = None) -> CreditTransaction:
+    def create_transaction(cls, organization: Organization, centicredits_delta: int, bot: Bot = None, stripe_payment_intent_id: str = None, description: str = None) -> CreditTransaction:
         """
         Creates a credit transaction for an organization. If no root transaction exists,
         creates one first. Otherwise creates a child transaction.
@@ -303,6 +348,7 @@ class CreditTransactionManager:
                         centicredits_delta=centicredits_delta,
                         parent_transaction=leaf_transaction,
                         bot=bot,
+                        stripe_payment_intent_id=stripe_payment_intent_id,
                         description=description,
                     )
 
@@ -330,6 +376,7 @@ class BotEventTypes(models.IntegerChoices):
     LEAVE_REQUESTED = 8, "Bot requested to leave meeting"
     COULD_NOT_JOIN = 9, "Bot could not join meeting"
     POST_PROCESSING_COMPLETED = 10, "Post Processing Completed"
+    DATA_DELETED = 11, "Data Deleted"
 
     @classmethod
     def type_to_api_code(cls, value):
@@ -345,6 +392,7 @@ class BotEventTypes(models.IntegerChoices):
             cls.LEAVE_REQUESTED: "leave_requested",
             cls.COULD_NOT_JOIN: "could_not_join_meeting",
             cls.POST_PROCESSING_COMPLETED: "post_processing_completed",
+            cls.DATA_DELETED: "data_deleted",
         }
         return mapping.get(value)
 
@@ -382,6 +430,7 @@ class BotEventSubTypes(models.IntegerChoices):
     LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING = 12, "Leave requested - Auto leave only participant in meeting"
     FATAL_ERROR_HEARTBEAT_TIMEOUT = 13, "Fatal error - Heartbeat timeout"
     COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND = 14, "Bot could not join meeting - Meeting not found"
+    FATAL_ERROR_BOT_NOT_LAUNCHED = 15, "Fatal error - Bot not launched"
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -401,6 +450,7 @@ class BotEventSubTypes(models.IntegerChoices):
             cls.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING: "auto_leave_only_participant_in_meeting",
             cls.FATAL_ERROR_HEARTBEAT_TIMEOUT: "heartbeat_timeout",
             cls.COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND: "meeting_not_found",
+            cls.FATAL_ERROR_BOT_NOT_LAUNCHED: "bot_not_launched",
         }
         return mapping.get(value)
 
@@ -441,7 +491,7 @@ class BotEvent(models.Model):
             models.CheckConstraint(
                 check=(
                     # For FATAL_ERROR event type, must have one of the valid event subtypes
-                    (Q(event_type=BotEventTypes.FATAL_ERROR) & (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_UI_ELEMENT_NOT_FOUND) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_HEARTBEAT_TIMEOUT)))
+                    (Q(event_type=BotEventTypes.FATAL_ERROR) & (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_UI_ELEMENT_NOT_FOUND) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_HEARTBEAT_TIMEOUT) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_BOT_NOT_LAUNCHED)))
                     |
                     # For COULD_NOT_JOIN event type, must have one of the valid event subtypes
                     (Q(event_type=BotEventTypes.COULD_NOT_JOIN) & (Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_REQUEST_TO_JOIN_DENIED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND)))
@@ -458,7 +508,7 @@ class BotEvent(models.Model):
 
 
 class BotEventManager:
-    TERMINAL_STATES = [BotStates.FATAL_ERROR, BotStates.ENDED]
+    POST_MEETING_STATES = [BotStates.FATAL_ERROR, BotStates.ENDED, BotStates.DATA_DELETED]
 
     # Define valid state transitions for each event type
     VALID_TRANSITIONS = {
@@ -477,6 +527,7 @@ class BotEventManager:
                 BotStates.JOINED_NOT_RECORDING,
                 BotStates.WAITING_ROOM,
                 BotStates.LEAVING,
+                BotStates.POST_PROCESSING,
             ],
             "to": BotStates.FATAL_ERROR,
         },
@@ -519,7 +570,15 @@ class BotEventManager:
             "from": BotStates.POST_PROCESSING,
             "to": BotStates.ENDED,
         },
+        BotEventTypes.DATA_DELETED: {
+            "from": [BotStates.FATAL_ERROR, BotStates.ENDED],
+            "to": BotStates.DATA_DELETED,
+        },
     }
+
+    @classmethod
+    def event_can_be_created_for_state(cls, event_type: BotEventTypes, state: BotStates):
+        return state in cls.VALID_TRANSITIONS[event_type]["from"]
 
     @classmethod
     def set_requested_bot_action_taken_at(cls, bot: Bot):
@@ -550,14 +609,20 @@ class BotEventManager:
         return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING
 
     @classmethod
-    def is_terminal_state(cls, state: int):
-        return state in cls.TERMINAL_STATES
+    def is_post_meeting_state(cls, state: int):
+        return state in cls.POST_MEETING_STATES
 
     @classmethod
-    def get_terminal_states_q_filter(cls):
-        """Returns a Q object to filter for terminal states"""
+    def bot_event_should_incur_charges(cls, event: BotEvent):
+        if event.event_type == BotEventTypes.FATAL_ERROR:
+            return False
+        return True
+
+    @classmethod
+    def get_post_meeting_states_q_filter(cls):
+        """Returns a Q object to filter for post meeting states"""
         q_filter = models.Q()
-        for state in cls.TERMINAL_STATES:
+        for state in cls.POST_MEETING_STATES:
             q_filter |= models.Q(state=state)
         return q_filter
 
@@ -640,8 +705,9 @@ class BotEventManager:
                         pending_recording = pending_recordings.first()
                         RecordingManager.set_recording_in_progress(pending_recording)
 
-                    # If we're in a terminal state
-                    if cls.is_terminal_state(new_state):
+                    # If we transitioned to a post meeting state
+                    transitioned_to_post_meeting_state = cls.is_post_meeting_state(new_state) and not cls.is_post_meeting_state(old_state)
+                    if transitioned_to_post_meeting_state:
                         # If there is an in progress recording, set it to complete
                         in_progress_recordings = bot.recordings.filter(state=RecordingStates.IN_PROGRESS)
                         if in_progress_recordings.count() > 1:
@@ -649,7 +715,7 @@ class BotEventManager:
                         for recording in in_progress_recordings:
                             RecordingManager.set_recording_complete(recording)
 
-                        if os.getenv("CHARGE_CREDITS_FOR_BOTS") == "true":
+                        if settings.CHARGE_CREDITS_FOR_BOTS and cls.bot_event_should_incur_charges(event):
                             centicredits_consumed = bot.centicredits_consumed()
                             if centicredits_consumed > 0:
                                 CreditTransactionManager.create_transaction(
@@ -747,6 +813,9 @@ class TranscriptionTypes(models.IntegerChoices):
 
 class TranscriptionProviders(models.IntegerChoices):
     DEEPGRAM = 1, "Deepgram"
+    CLOSED_CAPTION_FROM_PLATFORM = 2, "Closed Caption From Platform"
+    GLADIA = 3, "Gladia"
+    OPENAI = 4, "OpenAI"
 
 
 from storages.backends.s3boto3 import S3Boto3Storage
@@ -936,6 +1005,8 @@ class Credentials(models.Model):
         DEEPGRAM = 1, "Deepgram"
         ZOOM_OAUTH = 2, "Zoom OAuth"
         GOOGLE_TTS = 3, "Google Text To Speech"
+        GLADIA = 4, "Gladia"
+        OPENAI = 5, "OpenAI"
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="credentials")
     credential_type = models.IntegerField(choices=CredentialTypes.choices, null=False)

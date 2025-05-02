@@ -36,11 +36,25 @@ class GoogleMeetUIMethods:
             logger.info(f"Unknown error occurred in find_element_by_selector. Exception type = {type(e)}")
             return None
 
+    def click_element_and_handle_blocking_elements(self, element, step):
+        num_attempts = 30
+
+        for attempt_index in range(num_attempts):
+            try:
+                self.click_element(element, step)
+                return
+            except UiCouldNotClickElementException as e:
+                logger.info(f"Error occurred when clicking element for step {step}, will click any blocking elements and retry the click")
+                self.click_others_may_see_your_meeting_differently_button(step)
+                last_attempt = attempt_index == num_attempts - 1
+                if last_attempt:
+                    raise e
+
     def click_element(self, element, step):
         try:
             element.click()
         except Exception as e:
-            logger.info(f"Error occurred when clicking element {step}, will retry")
+            logger.info(f"Error occurred when clicking element for step {step}, will retry")
             raise UiCouldNotClickElementException("Error occurred when clicking element", step, e)
 
     # If the meeting you're about to join is being recorded, gmeet makes you click an additional button after you're admitted to the meeting
@@ -58,7 +72,7 @@ class GoogleMeetUIMethods:
             others_may_see_your_meeting_differently_button.click()
 
     def look_for_blocked_element(self, step):
-        cannot_join_element = self.find_element_by_selector(By.XPATH, '//*[contains(text(), "You can\'t join this video call")]')
+        cannot_join_element = self.find_element_by_selector(By.XPATH, '//*[contains(text(), "You can\'t join this video call") or contains(text(), "There is a problem connecting to this video call")]')
         if cannot_join_element:
             # This means google is blocking us for whatever reason, but we can retry
             logger.info("Google is blocking us for whatever reason, but we can retry. Raising UiGoogleBlockingUsException")
@@ -81,6 +95,27 @@ class GoogleMeetUIMethods:
         if asking_to_be_let_in_element:
             logger.info("Bot was not let in after waiting period expired. Raising UiRequestToJoinDeniedException")
             raise UiRequestToJoinDeniedException("Bot was not let in after waiting period expired", step)
+
+    def turn_off_media_inputs(self):
+        logger.info("Waiting for the microphone button...")
+        MICROPHONE_BUTTON_SELECTOR = 'div[aria-label="Turn off microphone"]'
+        microphone_button = self.locate_element(
+            step="turn_off_microphone_button",
+            condition=EC.presence_of_element_located((By.CSS_SELECTOR, MICROPHONE_BUTTON_SELECTOR)),
+            wait_time_seconds=6,
+        )
+        logger.info("Clicking the microphone button...")
+        self.click_element(microphone_button, "turn_off_microphone_button")
+
+        logger.info("Waiting for the camera button...")
+        CAMERA_BUTTON_SELECTOR = 'div[aria-label="Turn off camera"]'
+        camera_button = self.locate_element(
+            step="turn_off_camera_button",
+            condition=EC.presence_of_element_located((By.CSS_SELECTOR, CAMERA_BUTTON_SELECTOR)),
+            wait_time_seconds=6,
+        )
+        logger.info("Clicking the camera button...")
+        self.click_element(camera_button, "turn_off_camera_button")
 
     def fill_out_name_input(self):
         num_attempts_to_look_for_name_input = 30
@@ -120,7 +155,11 @@ class GoogleMeetUIMethods:
                 self.click_element(captions_button, "click_captions_button")
                 return
             except UiCouldNotClickElementException as e:
-                raise e
+                self.click_others_may_see_your_meeting_differently_button("click_captions_button")
+                last_check_could_not_click_element = attempt_to_look_for_captions_button_index == num_attempts_to_look_for_captions_button - 1
+                if last_check_could_not_click_element:
+                    logger.info("Could not click captions button. Raising UiCouldNotClickElementException")
+                    raise e
             except TimeoutException as e:
                 self.look_for_blocked_element("click_captions_button")
                 self.look_for_denied_your_request_element("click_captions_button")
@@ -147,7 +186,7 @@ class GoogleMeetUIMethods:
                 )
 
     def check_if_meeting_is_found(self):
-        meeting_not_found_element = self.find_element_by_selector(By.XPATH, '//*[contains(text(), "Check your meeting code") or contains(text(), "Invalid video call name")]')
+        meeting_not_found_element = self.find_element_by_selector(By.XPATH, '//*[contains(text(), "Check your meeting code") or contains(text(), "Invalid video call name") or contains(text(), "Your meeting code has expired")]')
         if meeting_not_found_element:
             logger.info("Meeting not found. Raising UiMeetingNotFoundException")
             raise UiMeetingNotFoundException("Meeting not found", "check_if_meeting_is_found")
@@ -191,6 +230,8 @@ class GoogleMeetUIMethods:
 
         self.fill_out_name_input()
 
+        self.turn_off_media_inputs()
+
         logger.info("Waiting for the 'Ask to join' or 'Join now' button...")
         join_button = self.locate_element(
             step="join_button",
@@ -211,8 +252,8 @@ class GoogleMeetUIMethods:
             condition=EC.presence_of_element_located((By.CSS_SELECTOR, MORE_OPTIONS_BUTTON_SELECTOR)),
             wait_time_seconds=6,
         )
-        logger.info("Clicking the more options button...")
-        self.click_element(more_options_button, "more_options_button")
+        logger.info("Clicking the more options button....")
+        self.click_element_and_handle_blocking_elements(more_options_button, "more_options_button")
 
         logger.info("Waiting for the 'Change layout' list item...")
         change_layout_list_item = self.locate_element(
@@ -220,8 +261,8 @@ class GoogleMeetUIMethods:
             condition=EC.presence_of_element_located((By.XPATH, '//li[.//span[text()="Change layout"]]')),
             wait_time_seconds=6,
         )
-        logger.info("Clicking the 'Change layout' list item...")
-        self.click_element(change_layout_list_item, "change_layout_list_item")
+        logger.info("Clicking the 'Change layout' list item....")
+        self.click_element_and_handle_blocking_elements(change_layout_list_item, "change_layout_list_item")
 
         if layout_to_select == "spotlight":
             logger.info("Waiting for the 'Spotlight' label element")
@@ -282,6 +323,8 @@ class GoogleMeetUIMethods:
         if self.google_meet_closed_captions_language:
             self.select_language(self.google_meet_closed_captions_language)
 
+        self.ready_to_show_bot_image()
+
     def scroll_element_into_view(self, element, step):
         try:
             actions = ActionChains(self.driver)
@@ -340,13 +383,22 @@ class GoogleMeetUIMethods:
 
     def click_leave_button(self):
         logger.info("Waiting for the leave button")
-        leave_button = WebDriverWait(self.driver, 6).until(
-            EC.presence_of_element_located(
-                (
-                    By.CSS_SELECTOR,
-                    'button[jsname="CQylAd"][aria-label="Leave call"]',
+        num_attempts = 5
+        for attempt_index in range(num_attempts):
+            leave_button = WebDriverWait(self.driver, 16).until(
+                EC.presence_of_element_located(
+                    (
+                        By.CSS_SELECTOR,
+                        'button[jsname="CQylAd"][aria-label="Leave call"]',
+                    )
                 )
             )
-        )
-        logger.info("Clicking the leave button")
-        leave_button.click()
+            logger.info("Clicking the leave button")
+            try:
+                leave_button.click()
+                return
+            except Exception as e:
+                last_attempt = attempt_index == num_attempts - 1
+                if last_attempt:
+                    raise e
+                logger.info("Error clicking leave button. Retrying...")

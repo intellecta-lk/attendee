@@ -50,6 +50,12 @@ class WebhookSubscriptionTest(TransactionTestCase):
         self.create_webhook_view = CreateWebhookView()
         self.delete_webhook_view = DeleteWebhookView()
 
+        # Configure Celery to run tasks eagerly (synchronously)
+        from django.conf import settings
+
+        settings.CELERY_TASK_ALWAYS_EAGER = True
+        settings.CELERY_TASK_EAGER_PROPAGATES = True
+
     def _get_request(self, user=None, method="GET", post_data=None):
         """Helper method to create a request object"""
         request = HttpRequest()
@@ -274,6 +280,12 @@ class WebhookDeliveryTest(TransactionTestCase):
             state=BotStates.READY,
         )
 
+        # Configure Celery to run tasks eagerly (synchronously)
+        from django.conf import settings
+
+        settings.CELERY_TASK_ALWAYS_EAGER = True
+        settings.CELERY_TASK_EAGER_PROPAGATES = True
+
     @patch("bots.tasks.deliver_webhook_task.requests.post")
     def test_webhook_delivery_success(self, mock_post):
         """Test successful webhook delivery"""
@@ -316,17 +328,22 @@ class WebhookDeliveryTest(TransactionTestCase):
             payload={"test": "data"},
         )
 
-        # Call delivery task
-        deliver_webhook.apply(args=[attempt.id])
+        # Call delivery task - manually simulate the retries
+        for _ in range(3):
+            try:
+                deliver_webhook.apply(args=[attempt.id])
+            except:
+                # Ignore the retry exception
+                pass
 
         # Refresh the attempt object from the db
         attempt.refresh_from_db()
 
         self.assertTrue(isinstance(attempt.status, int))
         self.assertEqual(attempt.status, WebhookDeliveryAttemptStatus.FAILURE)
-        self.assertEqual(len(attempt.response_body_list), 1)
+        self.assertEqual(len(attempt.response_body_list), 3)
         self.assertIsNone(attempt.succeeded_at)
-        self.assertEqual(attempt.attempt_count, 1)
+        self.assertEqual(attempt.attempt_count, 3)
 
     @patch("bots.tasks.deliver_webhook_task.requests.post")
     def test_webhook_delivery_inactive(self, mock_post):

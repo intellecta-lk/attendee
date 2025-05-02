@@ -7,6 +7,7 @@ from pydub import AudioSegment
 from .models import (
     MeetingTypes,
     RecordingStates,
+    TranscriptionProviders,
 )
 
 
@@ -351,7 +352,7 @@ def generate_utterance_json_for_bot_detail_view(recording):
         for i, word in enumerate(relative_words_data):
             relative_words_data_with_spaces.append(
                 {
-                    "word": word["punctuated_word"],
+                    "word": word.get("punctuated_word") or word.get("word"),
                     "start": word["start"],
                     "end": word["end"],
                     "utterance_id": utterance.id,
@@ -401,6 +402,22 @@ def meeting_type_from_url(url):
         return None
 
 
+def transcription_provider_from_meeting_url_and_transcription_settings(url, settings):
+    if "deepgram" in settings:
+        return TranscriptionProviders.DEEPGRAM
+    elif "gladia" in settings:
+        return TranscriptionProviders.GLADIA
+    elif "openai" in settings:
+        return TranscriptionProviders.OPENAI
+    elif "meeting_closed_captions" in settings:
+        return TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
+
+    # Return default provider. Which is deepgram for Zoom, and meeting_closed_captions for Google Meet / Teams
+    if meeting_type_from_url(url) == MeetingTypes.ZOOM:
+        return TranscriptionProviders.DEEPGRAM
+    return TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
+
+
 def generate_recordings_json_for_bot_detail_view(bot):
     # Process recordings and utterances
     recordings_data = []
@@ -416,3 +433,29 @@ def generate_recordings_json_for_bot_detail_view(bot):
         )
 
     return recordings_data
+
+
+def is_valid_png(image_data: bytes) -> bool:
+    """
+    Validates whether the provided bytes data is a valid PNG image.
+
+    Args:
+        image_data (bytes): The image data to validate
+
+    Returns:
+        bool: True if the data is a valid PNG image, False otherwise
+    """
+    try:
+        # First check for the PNG signature (first 8 bytes)
+        png_signature = b"\x89PNG\r\n\x1a\n"
+        if not image_data.startswith(png_signature):
+            return False
+
+        # Try to decode the image using OpenCV
+        img_array = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+        # If img is None, the decoding failed
+        return img is not None
+    except Exception:
+        return False

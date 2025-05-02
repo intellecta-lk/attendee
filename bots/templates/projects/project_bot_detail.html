@@ -100,6 +100,9 @@
                     {% endif %}
                 </span>
             </p>
+            {% if credits_consumed %}
+                <p><strong>Credits used:</strong> {{ credits_consumed|floatformat:2|default:"0.00" }}</p>
+            {% endif %}
         </div>
     </div>
 
@@ -121,6 +124,14 @@
             <button class="nav-link" id="webhooks-tab" data-bs-toggle="tab" 
                     data-bs-target="#webhooks" type="button" role="tab">
                 Webhooks
+            </button>
+        </li>
+        {% endif %}
+        {% if bot.metadata %}
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="metadata-tab" data-bs-toggle="tab" 
+                    data-bs-target="#metadata" type="button" role="tab">
+                Metadata
             </button>
         </li>
         {% endif %}
@@ -340,6 +351,34 @@
                 </div>
             {% else %}
                 <div class="alert alert-info">No webhook delivery attempts for this bot.</div>
+            {% endif %}
+        </div>
+
+        <!-- Metadata Tab -->
+        <div class="tab-pane fade" id="metadata" role="tabpanel">
+            {% if bot.metadata %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Property</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for key, value in bot.metadata.items %}
+                                <tr>
+                                    <td>{{ key }}</td>
+                                    <td>
+                                        {{ value }}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="alert alert-info">No metadata available for this bot.</div>
             {% endif %}
         </div>
     </div>

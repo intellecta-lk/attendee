@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -16,7 +17,7 @@ class FileUploader:
             bucket (str): The name of the S3 bucket to upload to
             key (str): The name of the to be stored file
         """
-        self.s3_client = boto3.client("s3")
+        self.s3_client = boto3.client("s3", endpoint_url=os.getenv("AWS_ENDPOINT_URL"))
         self.bucket = bucket
         self.key = key
         self._upload_thread = None

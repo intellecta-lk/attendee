@@ -117,7 +117,7 @@ For more details, follow [this guide](https://developers.zoom.us/docs/meeting-sd
 
 ## Contribute 
 
-Attendee is open source. TThe best way to contribute is to open an issue or join the [Slack Community](https://join.slack.com/t/attendeecommu-rff8300/shared_invite/zt-2uhpam6p2-ZzLAoVrljbL2UEjqdSHrgQ) and let us know what you want to build.
+Attendee is open source. The best way to contribute is to open an issue or join the [Slack Community](https://join.slack.com/t/attendeecommu-rff8300/shared_invite/zt-2uhpam6p2-ZzLAoVrljbL2UEjqdSHrgQ) and let us know what you want to build.
 
 See CONTRIBUTING.md for detailed instructions on how to contribute to Attendee.
 
@@ -133,8 +133,9 @@ See CONTRIBUTING.md for detailed instructions on how to contribute to Attendee.
 - [x] Speech support
 - [x] Automatically leave meetings
 - [x] Microsoft Teams support
+- [x] Webhooks for state changes
+- [ ] Audio input / output via websockets
 - [ ] [ZAK token](https://developers.zoom.us/docs/meeting-sdk/auth/#start-meetings-and-webinars-with-a-zoom-users-zak-token) and [Join token](https://developers.zoom.us/docs/api/meetings/#tag/meetings/GET/meetings/{meetingId}/jointoken/local_recording) support
 - [ ] Scheduled meetings
-- [ ] Webhooks for state changes
 
 Have suggestions for the roadmap? Join the [Slack Community](https://join.slack.com/t/attendeecommu-rff8300/shared_invite/zt-2uhpam6p2-ZzLAoVrljbL2UEjqdSHrgQ) or open an issue.

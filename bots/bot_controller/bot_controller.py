@@ -2,7 +2,10 @@ import json
 import logging
 import os
 import signal
+import threading
+import time
 import traceback
+from datetime import timedelta
 
 import gi
 import redis
@@ -27,6 +30,7 @@ from bots.models import (
     RecordingFormats,
     RecordingManager,
     RecordingStates,
+    TranscriptionProviders,
     Utterance,
 )
 from bots.utils import meeting_type_from_url
@@ -51,9 +55,15 @@ class BotController:
     def get_google_meet_bot_adapter(self):
         from bots.google_meet_bot_adapter import GoogleMeetBotAdapter
 
+        if self.get_recording_transcription_provider() == TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM:
+            add_audio_chunk_callback = None
+        else:
+            add_audio_chunk_callback = self.individual_audio_input_manager.add_chunk
+
         return GoogleMeetBotAdapter(
             display_name=self.bot_in_db.name,
             send_message_callback=self.on_message_from_adapter,
+            add_audio_chunk_callback=add_audio_chunk_callback,
             meeting_url=self.bot_in_db.meeting_url,
             add_video_frame_callback=None,
             wants_any_video_frames_callback=None,
@@ -74,17 +84,18 @@ class BotController:
         return TeamsBotAdapter(
             display_name=self.bot_in_db.name,
             send_message_callback=self.on_message_from_adapter,
+            add_audio_chunk_callback=None,
             meeting_url=self.bot_in_db.meeting_url,
-            add_video_frame_callback=self.gstreamer_pipeline.on_new_video_frame,
-            wants_any_video_frames_callback=self.gstreamer_pipeline.wants_any_video_frames,
-            add_mixed_audio_chunk_callback=self.gstreamer_pipeline.on_mixed_audio_raw_data_received_callback,
+            add_video_frame_callback=None,
+            wants_any_video_frames_callback=None,
+            add_mixed_audio_chunk_callback=None,
             upsert_caption_callback=self.closed_caption_manager.upsert_caption,
             automatic_leave_configuration=self.automatic_leave_configuration,
             add_encoded_mp4_chunk_callback=None,
             recording_view=self.bot_in_db.recording_view(),
             should_create_debug_recording=self.bot_in_db.create_debug_recording(),
-            start_recording_screen_callback=None,
-            stop_recording_screen_callback=None,
+            start_recording_screen_callback=self.screen_and_audio_recorder.start_recording,
+            stop_recording_screen_callback=self.screen_and_audio_recorder.stop_recording,
         )
 
     def get_zoom_bot_adapter(self):
@@ -120,6 +131,15 @@ class BotController:
             raise Exception(f"Could not determine meeting type for meeting url {self.bot_in_db.meeting_url}")
         return meeting_type
 
+    def get_per_participant_audio_sample_rate(self):
+        meeting_type = self.get_meeting_type()
+        if meeting_type == MeetingTypes.ZOOM:
+            return 32000
+        elif meeting_type == MeetingTypes.GOOGLE_MEET:
+            return 48000
+        elif meeting_type == MeetingTypes.TEAMS:
+            return 48000
+
     def get_audio_format(self):
         meeting_type = self.get_meeting_type()
         if meeting_type == MeetingTypes.ZOOM:
@@ -128,6 +148,12 @@ class BotController:
             return GstreamerPipeline.AUDIO_FORMAT_FLOAT
         elif meeting_type == MeetingTypes.TEAMS:
             return GstreamerPipeline.AUDIO_FORMAT_FLOAT
+
+    def get_sleep_time_between_audio_output_chunks_seconds(self):
+        meeting_type = self.get_meeting_type()
+        if meeting_type == MeetingTypes.ZOOM:
+            return 0.9
+        return 0.1
 
     def get_num_audio_sources(self):
         meeting_type = self.get_meeting_type()
@@ -161,6 +187,10 @@ class BotController:
         recording.file = s3_storage_key
         recording.first_buffer_timestamp_ms = self.get_first_buffer_timestamp_ms()
         recording.save()
+
+    def get_recording_transcription_provider(self):
+        recording = Recording.objects.get(bot=self.bot_in_db, is_default_recording=True)
+        return recording.transcription_provider
 
     def get_recording_filename(self):
         recording = Recording.objects.get(bot=self.bot_in_db, is_default_recording=True)
@@ -197,7 +227,7 @@ class BotController:
         def terminate_worker():
             import time
 
-            time.sleep(20)
+            time.sleep(600)
             if normal_quitting_process_worked:
                 logger.info("Normal quitting process worked, not force terminating worker")
                 return
@@ -254,6 +284,10 @@ class BotController:
         self.cleanup_called = False
         self.run_called = False
 
+        self.redis_client = None
+        self.pubsub = None
+        self.pubsub_channel = f"bot_{self.bot_in_db.id}"
+
         self.automatic_leave_configuration = AutomaticLeaveConfiguration()
 
         if self.bot_in_db.rtmp_destination_url():
@@ -283,7 +317,7 @@ class BotController:
             return os.path.join("/tmp", self.get_recording_filename())
 
     def should_create_gstreamer_pipeline(self):
-        # For google meet, we're doing a media recorder based recording technique that does the video processing in the browser
+        # For google meet / teams, we're doing a media recorder based recording technique that does the video processing in the browser
         # so we don't need to create a gstreamer pipeline here
         meeting_type = self.get_meeting_type()
         if meeting_type == MeetingTypes.ZOOM:
@@ -291,27 +325,37 @@ class BotController:
         elif meeting_type == MeetingTypes.GOOGLE_MEET:
             return False
         elif meeting_type == MeetingTypes.TEAMS:
-            return True
+            return False
 
     def should_create_screen_and_audio_recorder(self):
         return not self.should_create_gstreamer_pipeline()
+
+    def connect_to_redis(self):
+        # Close both pubsub and client if they exist
+        if self.pubsub:
+            self.pubsub.close()
+        if self.redis_client:
+            self.redis_client.close()
+
+        redis_url = os.getenv("REDIS_URL") + ("?ssl_cert_reqs=none" if os.getenv("DISABLE_REDIS_SSL") else "")
+        self.redis_client = redis.from_url(redis_url)
+        self.pubsub = self.redis_client.pubsub()
+        self.pubsub.subscribe(self.pubsub_channel)
+        logger.info(f"Redis connection established for bot {self.bot_in_db.id}")
 
     def run(self):
         if self.run_called:
             raise Exception("Run already called, exiting")
         self.run_called = True
 
-        redis_url = os.getenv("REDIS_URL") + ("?ssl_cert_reqs=none" if os.getenv("DISABLE_REDIS_SSL") else "")
-        redis_client = redis.from_url(redis_url)
-        pubsub = redis_client.pubsub()
-        channel = f"bot_{self.bot_in_db.id}"
-        pubsub.subscribe(channel)
+        self.connect_to_redis()
 
         # Initialize core objects
         # Only used for adapters that can provide per-participant audio
         self.individual_audio_input_manager = IndividualAudioInputManager(
             save_utterance_callback=self.save_individual_audio_utterance,
             get_participant_callback=self.get_participant,
+            sample_rate=self.get_per_participant_audio_sample_rate(),
         )
 
         # Only used for adapters that can provide closed captions
@@ -349,24 +393,43 @@ class BotController:
         self.audio_output_manager = AudioOutputManager(
             currently_playing_audio_media_request_finished_callback=self.currently_playing_audio_media_request_finished,
             play_raw_audio_callback=self.adapter.send_raw_audio,
+            sleep_time_between_chunks_seconds=self.get_sleep_time_between_audio_output_chunks_seconds(),
         )
 
         # Create GLib main loop
         self.main_loop = GLib.MainLoop()
 
-        # Set up Redis listener in a separate thread
-        import threading
+        def repeatedly_try_to_reconnect_to_redis():
+            reconnect_delay_seconds = 1
+            num_attempts = 0
+            while True:
+                try:
+                    self.connect_to_redis()
+                    break
+                except Exception as e:
+                    logger.info(f"Error reconnecting to Redis: {e} Attempt {num_attempts} / 30.")
+                    time.sleep(reconnect_delay_seconds)
+                    num_attempts += 1
+                    if num_attempts > 30:
+                        raise Exception("Failed to reconnect to Redis after 30 attempts")
 
         def redis_listener():
             while True:
                 try:
-                    message = pubsub.get_message(timeout=1.0)
+                    message = self.pubsub.get_message(timeout=1.0)
                     if message:
                         # Schedule Redis message handling in the main GLib loop
                         GLib.idle_add(lambda: self.handle_redis_message(message))
                 except Exception as e:
-                    logger.info(f"Error in Redis listener: {e}")
-                    break
+                    # If this is a certain type of exception, we can attempt to reconnect
+                    if isinstance(e, redis.exceptions.ConnectionError) and "Connection closed by server." in str(e):
+                        logger.info("Redis connection closed by server. Attempting to reconnect...")
+                        repeatedly_try_to_reconnect_to_redis()
+
+                    else:
+                        # log the type of exception
+                        logger.info(f"Error in Redis listener: {type(e)} {e}")
+                        break
 
         redis_thread = threading.Thread(target=redis_listener, daemon=True)
         redis_thread.start()
@@ -387,8 +450,8 @@ class BotController:
             self.cleanup()
         finally:
             # Clean up Redis subscription
-            pubsub.unsubscribe(channel)
-            pubsub.close()
+            self.pubsub.unsubscribe(self.pubsub_channel)
+            self.pubsub.close()
 
     def take_action_based_on_bot_in_db(self):
         if self.bot_in_db.state == BotStates.JOINING:
@@ -636,6 +699,32 @@ class BotController:
             self.cleanup()
             return
 
+        if message.get("message") == BotAdapter.Messages.BLOCKED_BY_GOOGLE_REPEATEDLY:
+            from bots.tasks.restart_bot_pod_task import restart_bot_pod
+
+            if self.bot_in_db.created_at < timezone.now() - timedelta(minutes=15):
+                logger.info("Received message that we were blocked by google repeatedly but bot was created more than 15 minutes ago, so not recreating pod")
+
+                new_bot_event = BotEventManager.create_event(
+                    bot=self.bot_in_db,
+                    event_type=BotEventTypes.FATAL_ERROR,
+                    event_sub_type=BotEventSubTypes.FATAL_ERROR_UI_ELEMENT_NOT_FOUND,
+                    event_metadata={
+                        "bot_restarts_exceeded_max_retries": True,
+                    },
+                )
+                self.cleanup()
+                return
+
+            logger.info("Received message that we were blocked by google repeatedly, so recreating pod")
+            # Run task to restart the bot pod with 1 minute delay
+            restart_bot_pod.apply_async(args=[self.bot_in_db.id], countdown=60)
+            # Don't do the normal cleanup tasks because we'll be restarting the pod
+            if self.main_loop and self.main_loop.is_running():
+                logger.info("Quitting main loop")
+                self.main_loop.quit()
+            return
+
         if message.get("message") == BotAdapter.Messages.UI_ELEMENT_NOT_FOUND:
             logger.info(f"Received message that UI element not found at {message.get('current_time')}")
 
@@ -770,6 +859,13 @@ class BotController:
         if message.get("message") == BotAdapter.Messages.BOT_JOINED_MEETING:
             logger.info("Received message that bot joined meeting")
             BotEventManager.create_event(bot=self.bot_in_db, event_type=BotEventTypes.BOT_JOINED_MEETING)
+            return
+
+        if message.get("message") == BotAdapter.Messages.READY_TO_SHOW_BOT_IMAGE:
+            logger.info("Received message that bot is ready to show image")
+            # If there are any image media requests, this will start playing them
+            # For now the only type of media request is an image, so this will start showing the bot's image
+            self.take_action_based_on_image_media_requests_in_db()
             return
 
         if message.get("message") == BotAdapter.Messages.BOT_RECORDING_PERMISSION_GRANTED:

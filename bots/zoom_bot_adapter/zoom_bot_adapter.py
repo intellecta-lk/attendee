@@ -137,8 +137,10 @@ class ZoomBotAdapter(BotAdapter):
 
         self.only_one_participant_in_meeting_at = None
         self.last_audio_received_at = None
+        self.silence_detection_activated = False
         self.cleaned_up = False
         self.requested_leave = False
+        self.joined_at = None
 
         if self.use_video:
             self.video_input_manager = VideoInputManager(
@@ -335,6 +337,7 @@ class ZoomBotAdapter(BotAdapter):
 
     def on_join(self):
         # Meeting reminder controller
+        self.joined_at = time.time()
         self.meeting_reminder_event = zoom.MeetingReminderEventCallbacks(onReminderNotifyCallback=self.on_reminder_notify)
         self.reminder_controller = self.meeting_service.GetMeetingReminderController()
         self.reminder_controller.SetEvent(self.meeting_reminder_event)
@@ -357,6 +360,10 @@ class ZoomBotAdapter(BotAdapter):
         self.audio_ctrl = self.meeting_service.GetMeetingAudioController()
         self.audio_ctrl_event = zoom.MeetingAudioCtrlEventCallbacks(onUserActiveAudioChangeCallback=self.on_user_active_audio_change_callback)
         self.audio_ctrl.SetEvent(self.audio_ctrl_event)
+        # Raw audio input got borked in the Zoom SDK after 6.3.5.
+        # This is work-around to get it to work again.
+        # See here for more details: https://devforum.zoom.us/t/cant-record-audio-with-linux-meetingsdk-after-6-3-5-6495-error-code-32/130689/5
+        self.audio_ctrl.JoinVoip()
 
         if self.use_raw_recording:
             self.recording_ctrl = self.meeting_service.GetMeetingRecordingController()
@@ -403,6 +410,9 @@ class ZoomBotAdapter(BotAdapter):
             initial_send_video_frame_response = self.video_sender.sendVideoFrame(blank, self.suggested_video_cap.width, self.suggested_video_cap.height, 0, zoom.FrameDataFormat_I420_FULL)
             logger.info(f"initial_send_video_frame_response = {initial_send_video_frame_response}")
         self.on_virtual_camera_start_send_callback_called = True
+
+        # At this point, we can show the bot image if there is one
+        self.send_message_callback({"message": self.Messages.READY_TO_SHOW_BOT_IMAGE})
 
     def on_virtual_camera_initialize_callback(self, video_sender, support_cap_list, suggest_cap):
         logger.info(f"on_virtual_camera_initialize_callback called with support_cap_list = {list(map(lambda x: f'{x.width}x{x.height}x{x.frame}', support_cap_list))} suggest_cap = {suggest_cap.width}x{suggest_cap.height}x{suggest_cap.frame}")
@@ -546,12 +556,11 @@ class ZoomBotAdapter(BotAdapter):
         param.meetingNumber = meeting_number
         param.userName = self.display_name
         param.psw = self.meeting_password if self.meeting_password is not None else ""
-        param.vanityID = ""
-        param.customer_key = ""
-        param.webinarToken = ""
-        param.onBehalfToken = ""
         param.isVideoOff = False
         param.isAudioOff = False
+        param.isAudioRawDataStereo = False
+        param.isMyVoiceInMix = False
+        param.eAudioRawdataSamplingRate = zoom.AudioRawdataSamplingRate.AudioRawdataSamplingRate_32K
 
         join_result = self.meeting_service.Join(join_param)
         logger.info(f"join_result = {join_result}")
@@ -674,7 +683,12 @@ class ZoomBotAdapter(BotAdapter):
                 self.send_message_callback({"message": self.Messages.ADAPTER_REQUESTED_BOT_LEAVE_MEETING, "leave_reason": BotAdapter.LEAVE_REASON.AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING})
                 return
 
-        if self.last_audio_received_at is not None:
+        if not self.silence_detection_activated and self.joined_at is not None and time.time() - self.joined_at > self.automatic_leave_configuration.silence_activate_after_seconds:
+            self.silence_detection_activated = True
+            self.last_audio_received_at = time.time()
+            logger.info(f"Silence detection activated after {self.automatic_leave_configuration.silence_activate_after_seconds} seconds")
+
+        if self.last_audio_received_at is not None and self.silence_detection_activated:
             if time.time() - self.last_audio_received_at > self.automatic_leave_configuration.silence_threshold_seconds:
                 logger.info(f"Auto-leaving meeting because there was no audio message for {self.automatic_leave_configuration.silence_threshold_seconds} seconds")
                 self.send_message_callback({"message": self.Messages.ADAPTER_REQUESTED_BOT_LEAVE_MEETING, "leave_reason": BotAdapter.LEAVE_REASON.AUTO_LEAVE_SILENCE})
