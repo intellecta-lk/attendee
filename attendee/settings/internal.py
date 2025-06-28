@@ -3,7 +3,7 @@ import os
 from .base import *
 
 DEBUG = True
-ALLOWED_HOSTS = ["tendee-stripe-hooks.ngrok.io", "localhost","attendee.intellecta-lk.com"]
+ALLOWED_HOSTS = ["*"]
 
 DATABASES = {
     "default": {
@@ -15,6 +15,8 @@ DATABASES = {
         "PORT": "5432",
     }
 }
+# Needed on GKE
+CSRF_TRUSTED_ORIGINS = ["https://*.intellecta-lk.com"]
 
 # Log more stuff in development
 LOGGING = {
