@@ -19,22 +19,22 @@ services:
     # command: ["/bin/bash", "-c", "/opt/bin/entrypoint.sh && celery -A attendee worker -l INFO"]
     command: celery -A attendee worker -l INFO
 
-  attendee-scheduler-local:
-    build: ./
-    volumes:
-     - .:/attendee
-    networks:
-      - attendee_network
-    environment:
-      - POSTGRES_HOST=postgres
-      - REDIS_URL=redis://redis:6379/5
-      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-      - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
-    command: ["/bin/bash", "-c", "/opt/bin/entrypoint.sh && python manage.py run_scheduler"]
+  # attendee-scheduler-local:
+  #   build: ./
+  #   volumes:
+  #    - .:/attendee
+  #   networks:
+  #     - attendee_network
+  #   environment:
+  #     - POSTGRES_HOST=postgres
+  #     - REDIS_URL=redis://redis:6379/5
+  #     - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
+  #     - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+  #     - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+  #     - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
+  #     - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+  #     - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
+  #   command: ["/bin/bash", "-c", "/opt/bin/entrypoint.sh && python manage.py run_scheduler"]
 
   attendee-app-local:
     build: ./
@@ -43,7 +43,7 @@ services:
     networks:
       - attendee_network
     ports:
-      - "8000:8000"
+      - "8000"
     environment:
       - POSTGRES_HOST=postgres
       - REDIS_URL=redis://redis:6379/5
