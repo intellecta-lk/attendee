@@ -1,35 +1,46 @@
-import dj_database_url
+import os
+
 from .base import *
 
-DEBUG = False
-ALLOWED_HOSTS = ["*"]
+DEBUG = True
+ALLOWED_HOSTS = ["tendee-stripe-hooks.ngrok.io", "localhost","attendee.intellecta-lk.com"]
 
 DATABASES = {
-    "default": dj_database_url.config(
-        env="DATABASE_URL",
-        conn_max_age=600,
-        conn_health_checks=True,
-        ssl_require=False,
-    ),
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "attendee_development",
+        "USER": "attendee_development_user",
+        "PASSWORD": "attendee_development_user",
+        "HOST": os.getenv("POSTGRES_HOST", "localhost"),
+        "PORT": "5432",
+    }
 }
 
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-SECURE_SSL_REDIRECT = True
-SECURE_HSTS_SECONDS = 60
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
+# Log more stuff in development
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # Uncomment to log database queries
+        # "django.db.backends": {
+        #    "handlers": ["console"],
+        #    "level": "DEBUG",
+        #    "propagate": False,
+        # },
+    },
+}
 
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = 'smtp.mailgun.org'
-# EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
-# EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True
-# DEFAULT_FROM_EMAIL = 'noreply@mail.attendee.dev'
-
-# ADMINS = []
-
-# if os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS'):
-#     ADMINS.append(('Attendee Error Reports Email Receiver', os.getenv('ERROR_REPORTS_RECEIVER_EMAIL_ADDRESS')))
-
-# SERVER_EMAIL = 'noreply@mail.attendee.dev'
