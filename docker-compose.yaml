@@ -1,8 +1,8 @@
 services:
   attendee-worker-local:
     build: ./
-    volumes:
-     - .:/attendee
+    # volumes:
+    #  - .:/attendee
     networks:
       - attendee_network
     environment:
@@ -40,8 +40,8 @@ services:
 
   attendee-app-local:
     build: ./
-    volumes:
-     - .:/attendee
+    # volumes:
+    #  - .:/attendee
     networks:
       - attendee_network
     ports:
