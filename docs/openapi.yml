@@ -119,6 +119,161 @@ paths:
           description: Bot details
         '404':
           description: Bot not found
+    patch:
+      operationId: Patch Bot
+      description: Updates a scheduled bot. Currently only the join_at field can be
+        updated, and only for bots in the scheduled state.
+      summary: Update a scheduled bot
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedPatchBotRequest'
+            examples:
+              UpdateJoinAt:
+                value:
+                  join_at: '2025-06-13T12:00:00Z'
+                summary: Update join_at
+                description: Example of updating the join_at time for a scheduled
+                  bot
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bot'
+          description: Bot updated successfully
+        '400':
+          description: Invalid input or bot is not in scheduled state
+        '404':
+          description: Bot not found
+    delete:
+      operationId: Delete scheduled Bot
+      description: Deletes a scheduled bot.
+      summary: Delete a scheduled bot
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          description: Scheduled bot deleted successfully
+        '404':
+          description: Bot not found
+  /api/v1/bots/{object_id}/chat_messages:
+    get:
+      operationId: Get Chat Messages
+      description: If the meeting is still in progress, this returns the chat messages
+        sent so far. Results are paginated using cursor pagination.
+      summary: Get chat messages sent in the meeting
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: Cursor for pagination
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      - in: query
+        name: updated_after
+        schema:
+          type: string
+          format: ISO 8601 datetime
+        description: Only return chat messages created after this time. Useful when
+          polling for updates.
+        examples:
+          DateTimeExample:
+            value: '2024-01-18T12:34:56Z'
+            summary: DateTime Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedChatMessageList'
+          description: List of chat messages
+        '404':
+          description: Bot not found
   /api/v1/bots/{object_id}/delete_data:
     post:
       operationId: Delete Bot Data
@@ -339,6 +494,176 @@ paths:
           description: Invalid input
         '404':
           description: Bot not found
+  /api/v1/bots/{object_id}/output_video:
+    post:
+      operationId: Output video
+      description: Causes the bot to output a video in the meeting.
+      summary: Output video
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  description: URL of the video to output. Must be a valid URL to
+                    an mp4 file.
+              required:
+              - url
+              additionalProperties: false
+      security:
+      - {}
+      responses:
+        '200':
+          description: Video request created successfully
+        '400':
+          description: Invalid input
+        '404':
+          description: Bot not found
+  /api/v1/bots/{object_id}/participant_events:
+    get:
+      operationId: Get Participant Events
+      description: Returns the participant events (join/leave) for a bot. Results
+        are paginated using cursor pagination.
+      summary: Get participant events for a bot
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: query
+        name: after
+        schema:
+          type: string
+          format: ISO 8601 datetime
+        description: Only return participant events created after this time. Useful
+          when polling for updates.
+        examples:
+          DateTimeExample:
+            value: '2024-01-18T12:34:56Z'
+            summary: DateTime Example
+      - in: query
+        name: before
+        schema:
+          type: string
+          format: ISO 8601 datetime
+        description: Only return participant events created before this time.
+        examples:
+          DateTimeExample:
+            value: '2024-01-18T13:34:56Z'
+            summary: DateTime Example
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: Cursor for pagination
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedParticipantEventList'
+          description: List of participant events
+        '404':
+          description: Bot not found
+  /api/v1/bots/{object_id}/pause_recording:
+    post:
+      operationId: Pause Recording
+      description: Pauses the recording for the specified bot. This functionality
+        is in beta and only supported for Google Meet and MS Teamsbots.
+      summary: Pause the bot's recording
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bot'
+          description: Recording paused successfully
+        '400':
+          description: Bot is not in a valid state to pause recording
+        '404':
+          description: Bot not found
   /api/v1/bots/{object_id}/recording:
     get:
       operationId: Get Bot Recording
@@ -386,6 +711,114 @@ paths:
                     start_timestamp_ms: 1733114771000
                   summary: Recording Upload
           description: Short-lived S3 URL for the recording
+  /api/v1/bots/{object_id}/resume_recording:
+    post:
+      operationId: Resume Recording
+      description: Resumes the recording for the specified bot.
+      summary: Resume the bot's recording
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bot'
+          description: Recording resumed successfully
+        '400':
+          description: Bot is not in a valid state to resume recording
+        '404':
+          description: Bot not found
+  /api/v1/bots/{object_id}/send_chat_message:
+    post:
+      operationId: Send Chat Message
+      description: Causes the bot to send a chat message in the meeting.
+      summary: Send a chat message
+      parameters:
+      - in: header
+        name: Authorization
+        schema:
+          type: string
+          default: Token YOUR_API_KEY_HERE
+        description: API key for authentication
+        required: true
+      - in: header
+        name: Content-Type
+        schema:
+          type: string
+          default: application/json
+        description: Should always be application/json
+        required: true
+      - in: path
+        name: object_id
+        schema:
+          type: string
+        description: Bot ID
+        required: true
+        examples:
+          BotIDExample:
+            value: bot_xxxxxxxxxxx
+            summary: Bot ID Example
+      tags:
+      - Bots
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BotChatMessageRequestRequest'
+            examples:
+              ChatMessage:
+                value:
+                  to: everyone
+                  message: Hello everyone, I'm here to record and summarize this meeting.
+                summary: Chat message
+                description: An example of a chat message to send to everyone in the
+                  meeting
+              ChatMessageToSpecificUser:
+                value:
+                  to: specific_user
+                  to_user_uuid: 123e4567-e89b-12d3-a456-426614174000
+                  message: Hello Bob, I'm here to record and summarize this meeting.
+                summary: Chat message to specific user
+                description: An example of a chat message to send to a specific user
+                  in the meeting
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          description: Chat message request created successfully
+        '400':
+          description: Invalid input
+        '404':
+          description: Bot not found
   /api/v1/bots/{object_id}/speech:
     post:
       operationId: Output speech
@@ -540,14 +973,43 @@ components:
           allOf:
           - $ref: '#/components/schemas/RecordingStateEnum'
           readOnly: true
+        join_at:
+          type: string
+          format: date-time
       required:
       - events
       - id
+      - join_at
       - meeting_url
       - metadata
       - recording_state
       - state
       - transcription_state
+    BotChatMessageRequestRequest:
+      type: object
+      properties:
+        to_user_uuid:
+          type: string
+          nullable: true
+          description: The UUID of the user to send the message to. Required if 'to'
+            is 'specific_user'.
+          maxLength: 255
+        to:
+          allOf:
+          - $ref: '#/components/schemas/ToEnum'
+          default: everyone
+          description: |-
+            Who to send the message to.
+
+            * `everyone` - everyone
+            * `specific_user` - specific_user
+            * `everyone_but_host` - everyone_but_host
+        message:
+          type: string
+          minLength: 1
+          description: The message text to send. Does not support emojis currently.
+      required:
+      - message
     BotImageRequest:
       type: object
       properties:
@@ -566,6 +1028,39 @@ components:
       required:
       - data
       - type
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        timestamp_ms:
+          type: string
+          readOnly: true
+        timestamp:
+          type: integer
+        to:
+          type: string
+          readOnly: true
+        sender_name:
+          type: string
+        sender_uuid:
+          type: string
+        sender_user_uuid:
+          type: string
+          nullable: true
+        additional_data: {}
+      required:
+      - additional_data
+      - id
+      - sender_name
+      - sender_user_uuid
+      - sender_uuid
+      - text
+      - timestamp
+      - timestamp_ms
+      - to
     CreateBotRequest:
       type: object
       properties:
@@ -588,6 +1083,15 @@ components:
             client_id: abc123
             user: john_doe
             purpose: Weekly team meeting
+        bot_chat_message:
+          allOf:
+          - $ref: '#/components/schemas/BotChatMessageRequestRequest'
+          description: The chat message the bot sends after it joins the meeting
+        join_at:
+          type: string
+          format: date-time
+          description: The time the bot should join the meeting. ISO 8601 format,
+            e.g. 2025-06-13T12:00:00Z
         transcription_settings:
           type: object
           properties:
@@ -596,11 +1100,43 @@ components:
               properties:
                 language:
                   type: string
-                  description: 'The language code for transcription (e.g. ''en'').
-                    See here for available languages: https://developers.deepgram.com/docs/models-languages-overview'
+                  description: 'The language code for transcription. Defaults to ''multi''
+                    if not specified, which selects the language automatically and
+                    can change the detected language in the middle of the audio. See
+                    here for available languages: https://developers.deepgram.com/docs/models-languages-overview.'
                 detect_language:
                   type: boolean
-                  description: Whether to automatically detect the spoken language
+                  description: Whether to automatically detect the spoken language.
+                    Can only detect a single language for the entire audio. This is
+                    only supported for an older model and is not recommended. Please
+                    use language='multi' instead.
+                callback:
+                  type: string
+                  description: 'The URL to send the transcriptions to. If used, the
+                    transcriptions will be sent directly from Deepgram to your server
+                    so you will not be able to access them via the Attendee API. See
+                    here for details: https://developers.deepgram.com/docs/callback'
+                keyterms:
+                  type: array
+                  items:
+                    type: string
+                  description: 'Improve recall of key terms or phrases in the transcript.
+                    This feature is only available for the nova-3 model in english,
+                    so you must set the language to ''en''. See here for details:
+                    https://developers.deepgram.com/docs/keyterm'
+                keywords:
+                  type: array
+                  items:
+                    type: string
+                  description: 'Improve recall of key terms or phrases in the transcript.
+                    This feature is only available for the nova-2 model. See here
+                    for details: https://developers.deepgram.com/docs/keywords'
+                model:
+                  type: string
+                  description: 'The model to use for transcription. Defaults to ''nova-3''
+                    if not specified, which is the recommended model for most use
+                    cases. See here for details: https://developers.deepgram.com/docs/models-languages-overview'
+              additionalProperties: false
             gladia:
               type: object
               properties:
@@ -614,6 +1150,7 @@ components:
                   type: boolean
                   description: Whether to use code switching to transcribe the meeting
                     in multiple languages.
+              additionalProperties: false
             meeting_closed_captions:
               type: object
               properties:
@@ -622,6 +1159,13 @@ components:
                   description: 'The language code for Google Meet closed captions
                     (e.g. ''en-US''). See here for available languages and codes:
                     https://docs.google.com/spreadsheets/d/1MN44lRrEBaosmVI9rtTzKMii86zGgDwEwg4LSj-SjiE'
+                teams_language:
+                  type: string
+                  description: 'The language code for Teams closed captions (e.g.
+                    ''en-us''). This will change the closed captions language for
+                    everyone in the meeting, not just the bot. See here for available
+                    languages and codes: https://docs.google.com/spreadsheets/d/1F-1iLJ_4btUZJkZcD2m5sF3loqGbB0vTzgOubwQTb5o/edit?usp=sharing'
+              additionalProperties: false
             openai:
               type: object
               properties:
@@ -634,8 +1178,68 @@ components:
                 prompt:
                   type: string
                   description: Optional prompt to use for the OpenAI transcription
+                language:
+                  type: string
+                  description: 'The language to use for transcription. See here in
+                    the ''Set 1'' column for available language codes: https://en.wikipedia.org/wiki/List_of_ISO_639_language_codes.
+                    This parameter is optional but if you know the language in advance,
+                    setting it will improve accuracy.'
               required:
               - model
+              additionalProperties: false
+            assembly_ai:
+              type: object
+              properties:
+                language_code:
+                  type: string
+                  description: 'The language code to use for transcription. See here
+                    for available languages: https://www.assemblyai.com/docs/speech-to-text/pre-recorded-audio/supported-languages'
+                language_detection:
+                  type: boolean
+                  description: Whether to automatically detect the spoken language.
+                keyterms_prompt:
+                  type: array
+                  items:
+                    type: string
+                  description: List of words or phrases to boost in the transcript.
+                    Only supported for when using the 'slam-1' speech model. See AssemblyAI
+                    docs for details.
+                speech_model:
+                  type: string
+                  enum:
+                  - best
+                  - nano
+                  - slam-1
+                  - universal
+                  description: The speech model to use for transcription. See AssemblyAI
+                    docs for details.
+              additionalProperties: false
+            sarvam:
+              type: object
+              properties:
+                model:
+                  type: string
+                  enum:
+                  - saarika:v2
+                  - saarika:v2.5
+                  description: The Sarvam model to use for transcription
+                language_code:
+                  type: string
+                  enum:
+                  - unknown
+                  - hi-IN
+                  - bn-IN
+                  - kn-IN
+                  - ml-IN
+                  - mr-IN
+                  - od-IN
+                  - pa-IN
+                  - ta-IN
+                  - te-IN
+                  - en-IN
+                  - gu-IN
+                  description: The language code to use for transcription
+              required: []
               additionalProperties: false
           required: []
           description: 'The transcription settings for the bot, e.g. {''deepgram'':
@@ -660,17 +1264,39 @@ components:
             format:
               type: string
               description: The format of the recording to save. The supported formats
-                are 'mp4'.
+                are 'mp4' and 'mp3'.
             view:
               type: string
               description: The view to use for the recording. The supported views
                 are 'speaker_view' and 'gallery_view'.
+            resolution:
+              type: string
+              description: The resolution to use for the recording. The supported
+                resolutions are '1080p' and '720p'. Defaults to '1080p'.
+              enum:
+              - 1080p
+              - 720p
           required: []
           default:
             format: mp4
             view: speaker_view
+            resolution: 1080p
           description: The settings for the bot's recording. Currently the only setting
             is 'view' which can be 'speaker_view' or 'gallery_view'.
+        teams_settings:
+          type: object
+          properties:
+            use_login:
+              type: boolean
+              description: Whether to use Teams bot login credentials to sign in before
+                joining the meeting. Requires Teams bot login credentials to be set
+                for the project.
+              default: false
+          required: []
+          additionalProperties: false
+          default:
+            use_login: false
+          description: The Microsoft Teams-specific settings for the bot.
         debug_settings:
           type: object
           properties:
@@ -683,9 +1309,115 @@ components:
             create_debug_recording: false
           description: 'The debug settings for the bot, e.g. {''create_debug_recording'':
             True}.'
+        automatic_leave_settings:
+          type: object
+          properties:
+            silence_timeout_seconds:
+              type: integer
+              description: Number of seconds of continuous silence after which the
+                bot should leave
+              default: 600
+            silence_activate_after_seconds:
+              type: integer
+              description: Number of seconds to wait before activating the silence
+                timeout
+              default: 1200
+            only_participant_in_meeting_timeout_seconds:
+              type: integer
+              description: Number of seconds to wait before leaving if bot is the
+                only participant
+              default: 60
+            wait_for_host_to_start_meeting_timeout_seconds:
+              type: integer
+              description: Number of seconds to wait for the host to start the meeting
+              default: 600
+            waiting_room_timeout_seconds:
+              type: integer
+              description: Number of seconds to wait before leaving if the bot is
+                in the waiting room
+              default: 900
+            max_uptime_seconds:
+              type: integer
+              description: Maximum number of seconds that the bot should be running
+                before automatically leaving (infinity)
+              default: null
+          required: []
+          additionalProperties: false
       required:
       - bot_name
       - meeting_url
+    PaginatedChatMessageList:
+      type: object
+      required:
+      - results
+      properties:
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cD00ODY%3D"
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+    PaginatedParticipantEventList:
+      type: object
+      required:
+      - results
+      properties:
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cD00ODY%3D"
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParticipantEvent'
+    ParticipantEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        participant_name:
+          type: string
+        participant_uuid:
+          type: string
+        participant_user_uuid:
+          type: string
+          nullable: true
+        event_type:
+          type: string
+          readOnly: true
+        event_data: {}
+        timestamp_ms:
+          type: integer
+      required:
+      - event_data
+      - event_type
+      - id
+      - participant_name
+      - participant_user_uuid
+      - participant_uuid
+      - timestamp_ms
+    PatchedPatchBotRequest:
+      type: object
+      properties:
+        join_at:
+          type: string
+          format: date-time
+          description: The time the bot should join the meeting. ISO 8601 format,
+            e.g. 2025-06-13T12:00:00Z
     Recording:
       type: object
       properties:
@@ -704,6 +1436,7 @@ components:
       - in_progress
       - complete
       - failed
+      - paused
     SpeechRequest:
       type: object
       properties:
@@ -741,6 +1474,19 @@ components:
       - waiting_room
       - ended
       - data_deleted
+      - scheduled
+      - staged
+      - joined_recording_paused
+    ToEnum:
+      enum:
+      - everyone
+      - specific_user
+      - everyone_but_host
+      type: string
+      description: |-
+        * `everyone` - everyone
+        * `specific_user` - specific_user
+        * `everyone_but_host` - everyone_but_host
     TranscriptUtterance:
       type: object
       properties:

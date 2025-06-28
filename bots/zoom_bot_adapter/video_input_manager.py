@@ -135,7 +135,7 @@ class VideoInputStream:
         )
 
         self.renderer = zoom.createRenderer(self.renderer_delegate)
-        set_resolution_result = self.renderer.setRawDataResolution(zoom.ZoomSDKResolution_180P)
+        set_resolution_result = self.renderer.setRawDataResolution(zoom.ZoomSDKResolution_360P)
         raw_data_type = {
             VideoInputManager.StreamType.SCREENSHARE: zoom.ZoomSDKRawDataType.RAW_DATA_TYPE_SHARE,
             VideoInputManager.StreamType.VIDEO: zoom.ZoomSDKRawDataType.RAW_DATA_TYPE_VIDEO,

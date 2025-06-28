@@ -15,6 +15,8 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 
+import os
+
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse
@@ -34,7 +36,12 @@ def health_check(request):
 
 urlpatterns = [
     path("health/", health_check, name="health-check"),
-    path("admin/", admin.site.urls),
+]
+
+if not os.environ.get("DISABLE_ADMIN"):
+    urlpatterns.append(path("admin/", admin.site.urls))
+
+urlpatterns += [
     path("accounts/", include("allauth.urls")),
     path("accounts/", include("allauth.socialaccount.urls")),
     path("external_webhooks/", include("bots.external_webhooks_urls")),

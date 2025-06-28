@@ -6,6 +6,11 @@ app_name = "bots"
 
 urlpatterns = [
     path(
+        "create/",
+        projects_views.CreateProjectView.as_view(),
+        name="create-project",
+    ),
+    path(
         "<str:object_id>",
         projects_views.ProjectDashboardView.as_view(),
         name="project-dashboard",
@@ -16,6 +21,11 @@ urlpatterns = [
         name="project-bots",
     ),
     path(
+        "<str:object_id>/bots/create",
+        projects_views.CreateBotView.as_view(),
+        name="create-bot",
+    ),
+    path(
         "<str:object_id>/bots/<str:bot_object_id>",
         projects_views.ProjectBotDetailView.as_view(),
         name="project-bot-detail",
@@ -24,6 +34,16 @@ urlpatterns = [
         "<str:object_id>/credentials",
         projects_views.ProjectCredentialsView.as_view(),
         name="project-credentials",
+    ),
+    path(
+        "<str:object_id>/project-and-team",
+        projects_views.ProjectProjectAndTeamView.as_view(),
+        name="project-project-and-team",
+    ),
+    path(
+        "<str:object_id>/edit",
+        projects_views.EditProjectView.as_view(),
+        name="project-edit",
     ),
     path(
         "<str:object_id>/keys",

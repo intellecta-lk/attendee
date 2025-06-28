@@ -40,10 +40,24 @@
         align-items: center;
         margin-right: 5px;
     }
+    
+    /* cURL Example styles */
+    #apiCodeExample {
+        font-family: monospace;
+        white-space: pre;
+        word-wrap: normal;
+        display: block;
+        line-height: 1.5;
+    }
 </style>
 
 <div class="container mt-4">
-    <h2 class="mb-4">Bots</h2>
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Bots</h2>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createBotModal">
+            <i class="bi bi-plus-circle me-1"></i> Create Bot
+        </button>
+    </div>
     
     <!-- Filters Collapsible Panel -->
     {% if filter_params.start_date or filter_params.end_date or filter_params.states or bots %}
@@ -97,7 +111,7 @@
         </div>
     </div>
     {% endif %}
-    <div class="table-responsive">
+    <div class="table-responsive" id="botsTable">
         {% if bots %}
             <table class="table">
                 <thead>
@@ -106,6 +120,7 @@
                         <th>Meeting URL</th>
                         <th>Status</th>
                         <th>Last Event</th>
+                        {% if has_scheduled_bots %}<th>Join At</th>{% endif %}
                         <th>Created</th>
                     </tr>
                 </thead>
@@ -138,6 +153,17 @@
                             {% endif %}
                             </small>
                         </td>
+                        {% if has_scheduled_bots %}
+                        <td>
+                            <small>
+                            {% if bot.join_at %}
+                                {{ bot.join_at|date:"M d, Y H:i" }}
+                            {% else %}
+                                -
+                            {% endif %}
+                            </small>
+                        </td>
+                        {% endif %}
                         <td><small>{{ bot.created_at|date:"M d, Y H:i" }}</small></td>
                     </tr>
                     {% endfor %}
@@ -193,6 +219,8 @@
     {% endif %}
 </div>
 
+{% include 'projects/partials/bot_create_modal.html' %}
+
 <script>
     function toggleFilterPanel(event) {
         event?.preventDefault();
@@ -207,6 +235,27 @@
             caret.style.transform = 'rotate(0deg)';
         }
     }
+    
+    // Add script to automatically open the modal if the flag is set
+    document.addEventListener('DOMContentLoaded', function() {
+        {% if open_create_modal %}
+            const createBotModal = new bootstrap.Modal(document.getElementById('createBotModal'));
+            createBotModal.show();
+
+            // Add event listener to remove the query parameter when modal closes
+            document.getElementById('createBotModal').addEventListener('hidden.bs.modal', function() {
+                // Get current URL and remove the parameter
+                const url = new URL(window.location.href);
+                if (url.searchParams.has('open_create_modal')) {
+                    url.searchParams.delete('open_create_modal');
+                    // Update URL without reloading the page
+                    window.history.replaceState({}, '', url.toString());
+                }
+            });
+
+        {% endif %}
+    });
+    
 </script>
 
 {% endblock %} 

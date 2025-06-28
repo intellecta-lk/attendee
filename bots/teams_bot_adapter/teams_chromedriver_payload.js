@@ -6,6 +6,7 @@ class StyleManager {
         this.silenceCheckInterval = null;
         this.frameStyleElement = null;
         this.frameAdjustInterval = null;
+        this.neededInteractionsInterval = null;
     }
 
     addAudioTrack(audioTrack) {
@@ -32,6 +33,49 @@ class StyleManager {
                 isSilent: false
             });
         }
+    }
+
+    checkNeededInteractions() {
+        // Check if bot has been removed from the meeting
+        const removedFromMeetingElement = document.getElementById('calling-retry-screen-title');
+        if (removedFromMeetingElement && 
+            removedFromMeetingElement.textContent.includes("You've been removed from this meeting")) {
+            window.ws.sendJson({
+                type: 'MeetingStatusChange',
+                change: 'removed_from_meeting'
+            });
+            console.log('Bot was removed from meeting, sent notification');
+        }
+
+        // We need to open the chat window to be able to track messages
+        const chatButton = document.querySelector('button#chat-button');
+        if (chatButton && !this.chatButtonClicked) {
+            chatButton.click();
+            this.chatButtonClicked = true;
+            
+            // Wait until the chat input element appears in the DOM
+            this.waitForChatInputAndSendReadyMessage();
+        }
+    }
+
+    waitForChatInputAndSendReadyMessage() {
+        const checkForChatInput = () => {
+            const chatInput = document.querySelector('[aria-label="Type a message"]');
+            if (chatInput) {
+                // Chat input is now available, send the ready message
+                window.ws.sendJson({
+                    type: 'ChatStatusChange',
+                    change: 'ready_to_send'
+                });
+                console.log('Chat input element found, ready to send messages');
+            } else {
+                // Chat input not found yet, check again in 500ms
+                setTimeout(checkForChatInput, 500);
+            }
+        };
+        
+        // Start checking for the chat input element
+        checkForChatInput();
     }
 
     startSilenceDetection() {
@@ -68,80 +112,104 @@ class StyleManager {
             clearInterval(this.silenceCheckInterval);
         }
                 
+        if (this.neededInteractionsInterval) {
+            clearInterval(this.neededInteractionsInterval);
+        }
+                
         // Check for audio activity every second
         this.silenceCheckInterval = setInterval(() => {
             this.checkAudioActivity();
         }, 1000);
-    }
 
-    makeMainVideoFillFrame() {
-        // Create a style element
-        const style = document.createElement('style');
-        
-        // Define the CSS rules
+        // Check for needed interactions every 5 seconds
+        this.neededInteractionsInterval = setInterval(() => {
+            this.checkNeededInteractions();
+        }, 5000);
+    }
+ 
+    makeMainVideoFillFrame = function() {
+        /* ── 0.  Cleanup from earlier runs ─────────────────────────────── */
+        if (this.blanket?.isConnected) this.blanket.remove();
+        if (this.frameStyleElement?.isConnected) this.frameStyleElement.remove();
+        if (this.frameAdjustInterval) {
+            cancelAnimationFrame(this.frameAdjustInterval);   // ← was clearInterval
+            this.frameAdjustInterval = null;
+        }
+    
+        /* ── 1.  Inject the blanket ────────────────────────────────────── */
+        const blanket = document.createElement("div");
+        blanket.id = "attendee-blanket";
+        Object.assign(blanket.style, {
+            position: "fixed",
+            inset: "0",
+            background: "#fff",
+            zIndex: 1998,              // below the video we’ll promote
+            pointerEvents: "none"      // lets events fall through
+        });
+        document.body.appendChild(blanket);
+        this.blanket = blanket;
+    
+        /* ── 2.  Promote the central video and its descendants ─────────── */
+        const style = document.createElement("style");
         style.textContent = `
-            /* First, hide all elements */
-            body * {
-            display: none !important;
-            }
-            
-            /* Make the target element visible */
+            /* central pane fills the viewport, highest z‑index */
             [data-test-segment-type="central"] {
-            display: block !important;
+                position: fixed !important;
+                inset: 0 !important;
+                width: 100vw !important;
+                height: 100vh !important;
+                z-index: 1999 !important;   /* > blanket */
             }
-            
-            /* Make all parents of the target element visible - this works because an element must be displayed for its children to be visible */
-            [data-test-segment-type="central"] ancestor {
-            display: block !important;
-            }
-            
-            /* Make all ancestors visible using :has() selector (modern browsers) */
-            *:has([data-test-segment-type="central"]) {
-            display: block !important;
-            }
-            
-            /* Make all children visible */
+            /* make sure its children inherit size & events normally */
+            [data-test-segment-type="central"], 
             [data-test-segment-type="central"] * {
-            display: inherit !important;
+                pointer-events: auto !important;
             }
         `;
-        
-        // Add the style element to the document head
         document.head.appendChild(style);
-        
-        // Store reference to the style element
         this.frameStyleElement = style;
-        
-        // Initial adjustment
-        this.adjustCentralElement();
-        
-        // Set up interval to readjust the central element regularly
-        this.frameAdjustInterval = setInterval(() => {
-            this.adjustCentralElement();
-        }, 250);
+    
+        /* ── 3.  Keep the central element the right size ───────────────── */
+        const adjust = () => {
+            this.adjustCentralElement?.();
+            this.frameAdjustInterval = requestAnimationFrame(adjust);  // ← RAF loop
+        };
+        adjust();  // kick it off
     }
     
-    adjustCentralElement() {
+    adjustCentralElement = function() {
         // Get the central element
         const centralElement = document.querySelector('[data-test-segment-type="central"]');
         
-        // Function to remove width and height from inline styles
+        // Function to resize the central element
         function adjustCentralElementSize(element) {
-            if (element.style) {
-                element.style.width = '1920px';
-                element.style.height = '1080px';
+            if (element?.style) {
+                element.style.width  = `${window.initialData.videoFrameWidth}px`;
+                element.style.height = `${window.initialData.videoFrameHeight}px`;
+                element.style.position = 'fixed';
+            }
+        }
+    
+        function adjustChildElement(element) {
+            if (element?.style) {
+                element.style.position = 'fixed';
+                element.style.width  = '100%';
+                element.style.height = '100%';
+                element.style.top  = '0';
+                element.style.left = '0';
             }
         }
         
         if (centralElement) {
-            // Remove styles from the central element
-            adjustCentralElementSize(centralElement.children[0].children[0].children[0]);
-            adjustCentralElementSize(centralElement.children[0]);
+            adjustChildElement(centralElement?.children[0]?.children[0]?.children[0]?.children[0]?.children[0]);
+            adjustChildElement(centralElement?.children[0]?.children[0]?.children[0]?.children[0]);
+            adjustChildElement(centralElement?.children[0]?.children[0]?.children[0]);
+            adjustChildElement(centralElement?.children[0]);
             adjustCentralElementSize(centralElement);
         }
     }
-
-    restoreOriginalFrame() {
+    
+    restoreOriginalFrame = function() {
         // If we have a reference to the style element, remove it
         if (this.frameStyleElement) {
             this.frameStyleElement.remove();
@@ -149,9 +217,9 @@ class StyleManager {
             console.log('Removed video frame style element');
         }
         
-        // Clear the adjustment interval if it exists
+        // Cancel the RAF loop if it exists
         if (this.frameAdjustInterval) {
-            clearInterval(this.frameAdjustInterval);
+            cancelAnimationFrame(this.frameAdjustInterval);   // ← was clearInterval
             this.frameAdjustInterval = null;
         }
     }
@@ -161,6 +229,11 @@ class StyleManager {
         if (this.silenceCheckInterval) {
             clearInterval(this.silenceCheckInterval);
             this.silenceCheckInterval = null;
+        }
+        
+        if (this.neededInteractionsInterval) {
+            clearInterval(this.neededInteractionsInterval);
+            this.neededInteractionsInterval = null;
         }
         
         // Restore original frame layout
@@ -601,6 +674,43 @@ The tracks have a streamId that looks like this mainVideo-39016. The SDP has tha
     }
 }
 
+
+class ChatMessageManager {
+    constructor(ws) {
+        this.ws = ws;
+    }
+
+    // The more sophisticated approach gets blocked by trusted html csp
+    stripHtml(html) {
+        return html.replace(/<[^>]*>/g, '');
+    }
+
+    handleChatMessage(chatMessage) {
+        try {
+            if (!chatMessage.clientMessageId)
+                return;
+            if (!chatMessage.from)
+                return;
+            if (!chatMessage.content)
+                return;
+            if (!chatMessage.originalArrivalTime)
+                return;
+
+            const timestamp_ms = new Date(chatMessage.originalArrivalTime).getTime();
+            this.ws.sendJson({
+                type: 'ChatMessage',
+                message_uuid: chatMessage.clientMessageId,
+                participant_uuid: chatMessage.from,
+                timestamp: Math.floor(timestamp_ms / 1000),
+                text: this.stripHtml(chatMessage.content),
+            });
+        }
+        catch (error) {
+            console.error('Error in handleChatMessage', error);
+        }
+    }
+}
+
 // User manager
 class UserManager {
     constructor(ws) {
@@ -657,6 +767,7 @@ class UserManager {
     }
 
     convertUser(user) {
+        const currentUserId = window.callManager?.getCurrentUserId();
         return {
             deviceId: user.details.id,
             displayName: user.details.displayName,
@@ -664,6 +775,7 @@ class UserManager {
             profile: '',
             status: user.state,
             humanized_status: user.state === "active" ? "in_meeting" : "not_in_meeting",
+            isCurrentUser: (!!currentUserId) && (user.details.id === currentUserId)
         }
     }
 
@@ -700,7 +812,8 @@ class UserManager {
                 profile: user.profile,
                 status: user.status,
                 humanized_status: user.humanized_status,
-                parentDeviceId: user.parentDeviceId
+                parentDeviceId: user.parentDeviceId,
+                isCurrentUser: user.isCurrentUser
             });
         }
 
@@ -724,7 +837,8 @@ class UserManager {
                 profilePicture: user.profilePicture,
                 status: user.status,
                 humanized_status: user.humanized_status,
-                parentDeviceId: user.parentDeviceId
+                parentDeviceId: user.parentDeviceId,
+                isCurrentUser: user.isCurrentUser
             });
         }
 
@@ -789,7 +903,7 @@ class WebSocketClient {
               const currentTime = performance.now();
               if (currentTime - this.lastVideoFrameTime >= 500 && this.mediaSendingEnabled) {
                   // Create black frame data (I420 format)
-                  const width = 1920, height = 1080;
+                  const width = window.initialData.videoFrameWidth, height = window.initialData.videoFrameHeight;
                   const yPlaneSize = width * height;
                   const uvPlaneSize = (width * height) / 4;
                   
@@ -820,6 +934,7 @@ class WebSocketClient {
     enableMediaSending() {
         this.mediaSendingEnabled = true;
         window.styleManager.start();
+        window.callManager.syncParticipants();
 
         // No longer need this because we're not using MediaStreamTrackProcessor's
         //this.startBlackFrameTimer();
@@ -1101,6 +1216,43 @@ function handleRosterUpdate(eventDataObject) {
     }
 }
 
+function handleConversationEnd(eventDataObject) {
+
+    let eventDataObjectBody = {};
+    try {
+        eventDataObjectBody = JSON.parse(eventDataObject.body);
+    } catch (error) {
+        realConsole?.error('Error parsing eventDataObject.body:', error);
+
+        try {
+            eventDataObjectBody = decodeWebSocketBody(eventDataObject.body);
+        } catch (error) {
+            realConsole?.error('Error decoding eventDataObject.body:', error);
+        }
+    }
+
+    realConsole?.log('handleConversationEnd, eventDataObjectBody', eventDataObjectBody);
+
+    const subCode = eventDataObjectBody?.subCode;
+    const subCodeValueForDeniedRequestToJoin = 5854;
+
+    if (subCode === subCodeValueForDeniedRequestToJoin)
+    {
+        // For now this won't do anything, but good to have it in our logs
+        window.ws?.sendJson({
+            type: 'MeetingStatusChange',
+            change: 'request_to_join_denied'
+        });
+        return;
+    }
+
+    realConsole?.log('handleConversationEnd, sending meeting ended message');
+    window.ws?.sendJson({
+        type: 'MeetingStatusChange',
+        change: 'meeting_ended'
+    });
+}
+
 const originalWebSocket = window.WebSocket;
 // Example usage:
 const wsInterceptor = new WebSocketInterceptor({
@@ -1121,6 +1273,9 @@ const wsInterceptor = new WebSocketInterceptor({
             if (eventDataObject.url.endsWith("rosterUpdate/") || eventDataObject.url.endsWith("rosterUpdate")) {
                 handleRosterUpdate(eventDataObject);
             }
+            if (eventDataObject.url.endsWith("conversation/conversationEnd/")) {
+                handleConversationEnd(eventDataObject);
+            }
             /*
             Not sure if this is needed
             if (eventDataObject.url.endsWith("controlVideoStreaming/")) {
@@ -1137,12 +1292,16 @@ window.ws = ws;
 const userManager = new UserManager(ws);
 window.userManager = userManager;
 
+const chatMessageManager = new ChatMessageManager(ws);
+window.chatMessageManager = chatMessageManager;
+
 //const videoTrackManager = new VideoTrackManager(ws);
 const virtualStreamToPhysicalStreamMappingManager = new VirtualStreamToPhysicalStreamMappingManager();
 const dominantSpeakerManager = new DominantSpeakerManager();
 
 const styleManager = new StyleManager();
 window.styleManager = styleManager;
+
 if (!realConsole) {
     if (document.readyState === 'complete') {
         createIframe();
@@ -1176,7 +1335,8 @@ const processClosedCaptionData = (item) => {
         deviceId: item.userId,
         captionId: captionId,
         text: item.text,
-        audioTimestamp: item.timestampAudioSent
+        audioTimestamp: item.timestampAudioSent,
+        isFinal: item.isFinal
     };
 
     window.ws.sendClosedCaptionUpdate(itemConverted);
@@ -1735,6 +1895,24 @@ function turnOnCamera() {
     }
 }
 
+function turnOnMic() {
+    // Click microphone button to turn it on
+    const microphoneButton = document.querySelector('button[aria-label="Unmute mic"]');
+    if (microphoneButton) {
+        console.log("Clicking the microphone button to turn it on");
+        microphoneButton.click();
+    }
+}
+
+function turnOffMic() {
+    // Click microphone button to turn it on
+    const microphoneButton = document.querySelector('button[aria-label="Mute mic"]');
+    if (microphoneButton) {
+        console.log("Clicking the microphone button to turn it off");
+        microphoneButton.click();
+    }
+}
+
 function turnOnMicAndCamera() {
     // Click microphone button to turn it on
     const microphoneButton = document.querySelector('button[aria-label="Unmute mic"]');
@@ -1916,6 +2094,138 @@ class BotOutputManager {
             img.src = url;
         });
     }
+
+
+    initializeBotOutputAudioTrack() {
+        if (this.botOutputAudioTrack) {
+            return;
+        }
+
+        // Create AudioContext and nodes
+        this.audioContextForBotOutput = new AudioContext();
+        this.gainNode = this.audioContextForBotOutput.createGain();
+        this.destination = this.audioContextForBotOutput.createMediaStreamDestination();
+
+        // Set initial gain
+        this.gainNode.gain.value = 1.0;
+
+        // Connect gain node to both destinations
+        this.gainNode.connect(this.destination);
+        this.gainNode.connect(this.audioContextForBotOutput.destination);  // For local monitoring
+
+        this.botOutputAudioTrack = this.destination.stream.getAudioTracks()[0];
+        
+        // Initialize audio queue for continuous playback
+        this.audioQueue = [];
+        this.nextPlayTime = 0;
+        this.isPlaying = false;
+        this.sampleRate = 44100; // Default sample rate
+        this.numChannels = 1;    // Default channels
+        this.turnOffMicTimeout = null;
+    }
+
+    playPCMAudio(pcmData, sampleRate = 44100, numChannels = 1) {
+        turnOnMic();
+
+        // Make sure audio context is initialized
+        this.initializeBotOutputAudioTrack();
+        
+        // Update properties if they've changed
+        if (this.sampleRate !== sampleRate || this.numChannels !== numChannels) {
+            this.sampleRate = sampleRate;
+            this.numChannels = numChannels;
+        }
+        
+        // Convert Int16 PCM data to Float32 with proper scaling
+        let audioData;
+        if (pcmData instanceof Float32Array) {
+            audioData = pcmData;
+        } else {
+            // Create a Float32Array of the same length
+            audioData = new Float32Array(pcmData.length);
+            // Scale Int16 values (-32768 to 32767) to Float32 range (-1.0 to 1.0)
+            for (let i = 0; i < pcmData.length; i++) {
+                // Division by 32768.0 scales the range correctly
+                audioData[i] = pcmData[i] / 32768.0;
+            }
+        }
+        
+        // Add to queue with timing information
+        const chunk = {
+            data: audioData,
+            duration: audioData.length / (numChannels * sampleRate)
+        };
+        
+        this.audioQueue.push(chunk);
+        
+        // Start playing if not already
+        if (!this.isPlaying) {
+            this.processAudioQueue();
+        }
+    }
+    
+    processAudioQueue() {
+        if (this.audioQueue.length === 0) {
+            this.isPlaying = false;
+
+            if (this.turnOffMicTimeout) {
+                clearTimeout(this.turnOffMicTimeout);
+                this.turnOffMicTimeout = null;
+            }
+            
+            // Delay turning off the mic by 2 second and check if queue is still empty
+            this.turnOffMicTimeout = setTimeout(() => {
+                // Only turn off mic if the queue is still empty
+                if (this.audioQueue.length === 0)
+                    turnOffMic();
+            }, 2000);
+            
+            return;
+        }
+        
+        this.isPlaying = true;
+        
+        // Get current time and next play time
+        const currentTime = this.audioContextForBotOutput.currentTime;
+        this.nextPlayTime = Math.max(currentTime, this.nextPlayTime);
+        
+        // Get next chunk
+        const chunk = this.audioQueue.shift();
+        
+        // Create buffer for this chunk
+        const audioBuffer = this.audioContextForBotOutput.createBuffer(
+            this.numChannels,
+            chunk.data.length / this.numChannels,
+            this.sampleRate
+        );
+        
+        // Fill the buffer
+        if (this.numChannels === 1) {
+            const channelData = audioBuffer.getChannelData(0);
+            channelData.set(chunk.data);
+        } else {
+            for (let channel = 0; channel < this.numChannels; channel++) {
+                const channelData = audioBuffer.getChannelData(channel);
+                for (let i = 0; i < chunk.data.length / this.numChannels; i++) {
+                    channelData[i] = chunk.data[i * this.numChannels + channel];
+                }
+            }
+        }
+        
+        // Create source and schedule it
+        const source = this.audioContextForBotOutput.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(this.gainNode);
+        
+        // Schedule precisely
+        source.start(this.nextPlayTime);
+        this.nextPlayTime += chunk.duration;
+        
+        // Schedule the next chunk processing
+        const timeUntilNextProcess = (this.nextPlayTime - currentTime) * 1000 * 0.8;
+        setTimeout(() => this.processAudioQueue(), Math.max(0, timeUntilNextProcess));
+    }
+
 }
 
 const botOutputManager = new BotOutputManager();
@@ -1924,7 +2234,7 @@ window.botOutputManager = botOutputManager;
 navigator.mediaDevices.getUserMedia = function(constraints) {
     return _getUserMedia.call(navigator.mediaDevices, constraints)
       .then(originalStream => {
-        console.log("Intercepted getUserMedia:", constraints);
+        realConsole?.log("Intercepted getUserMedia:", constraints);
   
         // Stop any original tracks so we don't actually capture real mic/cam
         originalStream.getTracks().forEach(t => t.stop());
@@ -1941,40 +2251,14 @@ navigator.mediaDevices.getUserMedia = function(constraints) {
         */
 
         if (constraints.video && botOutputManager.botOutputCanvasElementCaptureStream) {
-            console.log("Adding canvas track", botOutputManager.botOutputCanvasElementCaptureStream.getVideoTracks()[0]);
+            realConsole?.log("Adding canvas track", botOutputManager.botOutputCanvasElementCaptureStream.getVideoTracks()[0]);
             newStream.addTrack(botOutputManager.botOutputCanvasElementCaptureStream.getVideoTracks()[0]);
         }
 
-        // Audio sending not supported yet
-        /*
-        // If audio is requested, add our fake audio track
         if (constraints.audio) {  // Only create once
-            if (!audioContextForBotOutput) {
-                // Create AudioContext and nodes
-                audioContextForBotOutput = new AudioContext();
-                gainNode = audioContextForBotOutput.createGain();
-                destination = audioContextForBotOutput.createMediaStreamDestination();
-
-                // Set initial gain
-                gainNode.gain.value = 1.0;
-
-                // Connect gain node to both destinations
-                gainNode.connect(destination);
-                gainNode.connect(audioContextForBotOutput.destination);  // For local monitoring
-
-                botOutputAudioTrack = destination.stream.getAudioTracks()[0];
-            }
-            newStream.addTrack(botOutputAudioTrack);
-        }
-        */
-
-        // Video sending not supported yet
-        /*
-        if (botOutputVideoElement && audioContextForBotOutput && !videoSource) {
-            videoSource = audioContextForBotOutput.createMediaElementSource(botOutputVideoElement);
-            videoSource.connect(gainNode);
-        }
-        */
+            botOutputManager.initializeBotOutputAudioTrack();
+            newStream.addTrack(botOutputManager.botOutputAudioTrack);
+        }  
   
         return newStream;
       })
@@ -1983,3 +2267,162 @@ navigator.mediaDevices.getUserMedia = function(constraints) {
         throw err;
       });
   };
+
+(function () {
+    const _bind = Function.prototype.bind;
+    Function.prototype.bind = function (thisArg, ...args) {
+      if (this.name === 'onMessageReceived') {
+        const bound = _bind.apply(this, [thisArg, ...args]);
+        return function (...callArgs) {
+          const eventData = callArgs[0];
+          if (eventData?.data?.chatServiceBatchEvent?.[0]?.message)
+          {
+            const message = eventData.data.chatServiceBatchEvent[0].message;
+            realConsole?.log('chatMessage', message);
+            window.chatMessageManager?.handleChatMessage(message);
+          }
+          return bound.apply(this, callArgs);
+        };
+      }
+      return _bind.apply(this, [thisArg, ...args]);
+    };
+  })();
+
+class CallManager {
+    constructor() {
+        this.activeCall = null;
+    }
+
+    setActiveCall() {
+        if (this.activeCall) {
+            return;
+        }
+
+        if (window.callingDebug?.observableCall) {
+            this.activeCall = window.callingDebug.observableCall;
+        }
+
+        if (window.msteamscalling?.deref)
+        {
+            const microsoftCalling = window.msteamscalling.deref();
+            if (microsoftCalling?.callingService?.getActiveCall) {
+                const call = microsoftCalling.callingService.getActiveCall();
+                if (call) {
+                    this.activeCall = call;
+                }
+            }
+        }
+    }
+
+    getCurrentUserId() {
+        this.setActiveCall();
+        if (!this.activeCall) {
+            return;
+        }
+
+        return this.activeCall.callerMri;
+        // We're using callerMri because it includes the 8: prefix. If callerMri stops working, we can easily use the thing below.
+        // return this.activeCall.currentUserSkypeIdentity?.id;
+    }
+
+    syncParticipants() {
+        this.setActiveCall();
+        if (!this.activeCall) {
+            return;
+        }
+
+        const participantsRaw = this.activeCall.participants;
+        const participants = participantsRaw.map(participant => {
+            return {
+                id: participant.id,
+                displayName: participant.displayName,
+                endpoints: participant.endpoints,
+            };
+        }).filter(participant => participant.displayName);
+
+        for (const participant of participants) {
+            const endpoints = (participant?.endpoints?.endpointDetails || []).map(endpoint => {
+                if (!endpoint.endpointId) {
+                    return null;
+                }
+
+                if (!endpoint.mediaStreams) {
+                    return null;
+                }
+
+                return [
+                    endpoint.endpointId,
+                    {
+                        call: {
+                            mediaStreams: endpoint.mediaStreams
+                        }
+                    }
+                ]
+            }).filter(endpoint => endpoint);
+
+            const participantConverted = {
+                details: {id: participant.id, displayName: participant.displayName},
+                state: "active",
+                endpoints: Object.fromEntries(endpoints)
+            };
+            window.userManager.singleUserSynced(participantConverted);
+            syncVirtualStreamsFromParticipant(participantConverted);
+        }
+    }
+
+    enableClosedCaptions() {
+        this.setActiveCall();
+        if (this.activeCall) {
+            this.activeCall.startClosedCaption();
+            return true;
+        }
+        return false;
+    }
+
+    setClosedCaptionsLanguage(language) {
+        this.setActiveCall();
+        if (this.activeCall) {
+            this.activeCall.setClosedCaptionsLanguage(language);
+            // Unfortunately, this is needed for improved reliability.
+            // It seems like when the host joins at the same time as the bot, they reset the cc language to the default.
+            setTimeout(() => {
+                if (this.activeCall) {
+                    this.activeCall.setClosedCaptionsLanguage(language);
+                }
+            }, 1000);         
+            setTimeout(() => {
+                if (this.activeCall) {
+                    this.activeCall.setClosedCaptionsLanguage(language);
+                }
+            }, 3000);
+            setTimeout(() => {
+                if (this.activeCall) {
+                    this.activeCall.setClosedCaptionsLanguage(language);
+                }
+            }, 5000);
+            setTimeout(() => {
+                if (this.activeCall) {
+                    this.activeCall.setClosedCaptionsLanguage(language);
+                    // Set an interval that runs every 60 seconds and makes sure the current closed caption language is equal to the language
+                    // This is for debugging purposes
+                    setInterval(() => {
+                        if (this.activeCall && this.activeCall.getClosedCaptionsLanguage) {
+                            if (this.activeCall.getClosedCaptionsLanguage() !== language) {
+                                window.ws?.sendJson({
+                                    type: "closedCaptionsLanguageMismatch",
+                                    desiredLanguage: language,
+                                    currentLanguage: this.activeCall.getClosedCaptionsLanguage()
+                                });
+                            }
+                        }
+                    }, 60000);
+                }
+            }, 10000);
+            return true;
+        }
+        return false;
+    }
+}
+
+const callManager = new CallManager();
+window.callManager = callManager;

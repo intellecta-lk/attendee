@@ -64,6 +64,9 @@ RUN apt-get update && apt-get install -y linux-libc-dev
 # Install Ctags
 RUN apt-get update && apt-get install -y universal-ctags
 
+# Install xterm
+RUN apt-get update && apt-get install -y xterm
+
 # Install python dependencies
 RUN pip install pyjwt cython gdown deepgram-sdk python-dotenv
 

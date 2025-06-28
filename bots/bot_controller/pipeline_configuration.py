@@ -19,6 +19,8 @@ class PipelineConfiguration:
             {
                 # Basic meeting bot configuration
                 frozenset({"record_audio", "record_video", "transcribe_audio"}),
+                # Audio only recording configuration
+                frozenset({"record_audio", "transcribe_audio"}),
                 # RTMP streaming configuration
                 frozenset({"rtmp_stream_audio", "rtmp_stream_video", "transcribe_audio"}),
                 # Voice agent configuration
@@ -37,6 +39,16 @@ class PipelineConfiguration:
     def recorder_bot(cls) -> "PipelineConfiguration":
         return cls(
             record_video=True,
+            record_audio=True,
+            transcribe_audio=True,
+            rtmp_stream_audio=False,
+            rtmp_stream_video=False,
+        )
+
+    @classmethod
+    def audio_recorder_bot(cls) -> "PipelineConfiguration":
+        return cls(
+            record_video=False,
             record_audio=True,
             transcribe_audio=True,
             rtmp_stream_audio=False,

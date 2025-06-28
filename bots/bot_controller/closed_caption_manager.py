@@ -8,12 +8,22 @@ class CaptionEntry:
         self.created_at = datetime.utcnow()
         self.modified_at = self.created_at
         self.last_upsert_to_db_at: Optional[datetime] = None
+        self.only_save_final_captions = True
 
     def update(self, caption_data: dict):
         self.caption_data = caption_data
         self.modified_at = datetime.utcnow()
 
     def should_upsert_to_db(self, should_flush=False) -> bool:
+        if self.only_save_final_captions:
+            if not self.caption_data.get("isFinal") and not should_flush:
+                return False
+            if not self.last_upsert_to_db_at:
+                return True
+            if self.modified_at > self.last_upsert_to_db_at:
+                return True
+            return False
+
         # If never upserted to db, and it's been at least a second since creation
         if not self.last_upsert_to_db_at:
             return ((datetime.utcnow() - self.created_at) > timedelta(seconds=1)) or should_flush

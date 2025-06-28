@@ -79,6 +79,6 @@ def restart_bot_pod(self, bot_id):
     bot.save()
 
     bot_pod_creator = BotPodCreator()
-    bot_pod_create_result = bot_pod_creator.create_bot_pod(bot_id=bot.id, bot_name=bot.k8s_pod_name())
+    bot_pod_create_result = bot_pod_creator.create_bot_pod(bot_id=bot.id, bot_name=bot.k8s_pod_name(), bot_cpu_request=bot.cpu_request())
 
     logger.info(f"Bot pod create result: {bot_pod_create_result}")

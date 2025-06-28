@@ -40,7 +40,7 @@ def sign_payload(payload, secret):
     Sign a webhook payload using HMAC-SHA256. Returns a base64-encoded HMAC-SHA256 signature
     """
     # Convert the payload to a canonical JSON string
-    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload_json = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
     # Create the signature
     signature = hmac.new(secret, payload_json.encode("utf-8"), hashlib.sha256).digest()

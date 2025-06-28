@@ -15,6 +15,7 @@ class GstreamerPipeline:
     OUTPUT_FORMAT_FLV = "flv"
     OUTPUT_FORMAT_MP4 = "mp4"
     OUTPUT_FORMAT_WEBM = "webm"
+    OUTPUT_FORMAT_MP3 = "mp3"
 
     SINK_TYPE_APPSINK = "appsink"
     SINK_TYPE_FILE = "filesink"
@@ -26,7 +27,6 @@ class GstreamerPipeline:
         video_frame_size,
         audio_format,
         output_format,
-        num_audio_sources,
         sink_type,
         file_location=None,
     ):
@@ -34,7 +34,6 @@ class GstreamerPipeline:
         self.video_frame_size = video_frame_size
         self.audio_format = audio_format
         self.output_format = output_format
-        self.num_audio_sources = num_audio_sources
         self.sink_type = sink_type
         self.file_location = file_location
 
@@ -74,6 +73,8 @@ class GstreamerPipeline:
             muxer_string = "h264parse ! flvmux name=muxer streamable=true"
         elif self.output_format == self.OUTPUT_FORMAT_WEBM:
             muxer_string = "h264parse ! matroskamux name=muxer"
+        elif self.output_format == self.OUTPUT_FORMAT_MP3:
+            muxer_string = ""
         else:
             raise ValueError(f"Invalid output format: {self.output_format}")
 
@@ -84,74 +85,58 @@ class GstreamerPipeline:
         else:
             raise ValueError(f"Invalid sink type: {self.sink_type}")
 
-        if self.num_audio_sources == 1:
-            # fmt: off
-            audio_source_string = (
-                # --- AUDIO STRING FOR 1 AUDIO SOURCE ---
-                "appsrc name=audio_source_1 do-timestamp=false stream-type=0 format=time ! "
-                "queue name=q5 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "audioconvert ! "
-                "audiorate ! "
-                "queue name=q6 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "voaacenc bitrate=128000 ! "
-                "queue name=q7 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-            )
-            # fmt: on
-        elif self.num_audio_sources == 3:
-            audio_source_string = (
-                # --- AUDIO BRANCH 1 ---
-                "appsrc name=audio_source_1 do-timestamp=false stream-type=0 format=time ! "
-                "queue name=q5_1 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "mixer. "
-                # --- AUDIO BRANCH 2 ---
-                "appsrc name=audio_source_2 do-timestamp=false stream-type=0 format=time ! "
-                "queue name=q5_2 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "mixer. "
-                # --- AUDIO BRANCH 3 ---
-                "appsrc name=audio_source_3 do-timestamp=false stream-type=0 format=time ! "
-                "queue name=q5_3 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "mixer. "
-                # --- AUDIO MIXER
-                "adder name=mixer ! "
-                "queue name=mixer_q1 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "audioconvert ! "
-                "audiorate ! "
-                "queue name=mixer_q2 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
-                "voaacenc bitrate=128000 ! "
-                "queue name=mixer_q3 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
+        # fmt: off
+        audio_source_string = (
+            # --- AUDIO STRING FOR 1 AUDIO SOURCE ---
+            "appsrc name=audio_source_1 do-timestamp=false stream-type=0 format=time ! "
+            "queue name=q5 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
+            "audioconvert ! "
+            "audiorate ! "
+            "queue name=q6 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
+        )
+
+        if self.output_format == self.OUTPUT_FORMAT_MP3:
+            pipeline_str = (
+                f"{audio_source_string}"        # raw audio → …
+                "flacenc ! "
+                f"{sink_string}"               # … → sink
             )
         else:
-            raise ValueError(f"Unsupported number of audio sources: {self.num_audio_sources}")
-
-        pipeline_str = (
-            "appsrc name=video_source do-timestamp=false stream-type=0 format=time ! "
-            "queue name=q1 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! "  # q1 can contain 100mb of video before it drops
-            "videoconvert ! "
-            "videorate ! "
-            "queue name=q2 max-size-buffers=5000 max-size-bytes=500000000 max-size-time=0 ! "  # q2 can contain 100mb of video before it drops
-            "x264enc tune=zerolatency speed-preset=ultrafast ! "
-            "queue name=q3 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! "
-            f"{muxer_string} ! queue name=q4 ! {sink_string} "
-            f"{audio_source_string} "
-            "muxer. "
-        )
+            pipeline_str = (
+                "appsrc name=video_source do-timestamp=false stream-type=0 format=time ! "
+                "queue name=q1 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! "  # q1 can contain 100mb of video before it drops
+                "videoconvert ! "
+                "videorate ! "
+                "queue name=q2 max-size-buffers=5000 max-size-bytes=500000000 max-size-time=0 ! "  # q2 can contain 100mb of video before it drops
+                "x264enc tune=zerolatency speed-preset=ultrafast ! "
+                "queue name=q3 max-size-buffers=1000 max-size-bytes=100000000 max-size-time=0 ! "
+                f"{muxer_string} ! queue name=q4 ! {sink_string} "
+                f"{audio_source_string} "
+                "voaacenc bitrate=128000 ! "
+                "queue name=q7 leaky=downstream max-size-buffers=1000000 max-size-bytes=100000000 max-size-time=0 ! "
+                "muxer. "
+            )
 
         self.pipeline = Gst.parse_launch(pipeline_str)
 
-        # Get both appsrc elements
-        self.appsrc = self.pipeline.get_by_name("video_source")
+        if self.output_format != self.OUTPUT_FORMAT_MP3:
+            # Get both appsrc elements
+            self.appsrc = self.pipeline.get_by_name("video_source")
 
-        # Configure video appsrc
-        video_caps = Gst.Caps.from_string(f"video/x-raw,format=I420,width={self.video_frame_size[0]},height={self.video_frame_size[1]},framerate=30/1")
-        self.appsrc.set_property("caps", video_caps)
-        self.appsrc.set_property("format", Gst.Format.TIME)
-        self.appsrc.set_property("is-live", True)
-        self.appsrc.set_property("do-timestamp", False)
-        self.appsrc.set_property("stream-type", 0)  # GST_APP_STREAM_TYPE_STREAM
-        self.appsrc.set_property("block", True)  # This helps with synchronization
+            # Configure video appsrc
+            video_caps = Gst.Caps.from_string(f"video/x-raw,format=I420,width={self.video_frame_size[0]},height={self.video_frame_size[1]},framerate=30/1")
+            self.appsrc.set_property("caps", video_caps)
+            self.appsrc.set_property("format", Gst.Format.TIME)
+            self.appsrc.set_property("is-live", True)
+            self.appsrc.set_property("do-timestamp", False)
+            self.appsrc.set_property("stream-type", 0)  # GST_APP_STREAM_TYPE_STREAM
+            self.appsrc.set_property("block", True)  # This helps with synchronization
+        else:
+            self.appsrc = None
 
         audio_caps = Gst.Caps.from_string(self.audio_format)  # e.g. "audio/x-raw,rate=48000,channels=2,format=S16LE"
         self.audio_appsrcs = []
+        self.num_audio_sources = 1
         for i in range(self.num_audio_sources):
             audio_appsrc = self.pipeline.get_by_name(f"audio_source_{i + 1}")
             audio_appsrc.set_property("caps", audio_caps)
@@ -238,7 +223,7 @@ class GstreamerPipeline:
     def on_mixed_audio_raw_data_received_callback(self, data, timestamp=None, audio_appsrc_idx=0):
         audio_appsrc = self.audio_appsrcs[audio_appsrc_idx]
 
-        if not self.audio_recording_active or not audio_appsrc or not self.recording_active or not self.appsrc:
+        if not self.audio_recording_active or not audio_appsrc or not self.recording_active or (not self.appsrc and self.output_format != self.OUTPUT_FORMAT_MP3):
             return
 
         try:

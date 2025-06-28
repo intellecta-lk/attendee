@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import math
 import os
@@ -7,12 +8,14 @@ import stripe
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import models
-from django.http import HttpResponse
+from django.http import HttpResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
 from django.views.generic.list import ListView
 
+from .bots_api_utils import BotCreationSource, create_bot
+from .launch_bot_utils import launch_bot
 from .models import (
     ApiKey,
     Bot,
@@ -61,6 +64,8 @@ class ProjectDashboardView(LoginRequiredMixin, ProjectUrlContextMixin, View):
 
         has_ended_bots = Bot.objects.filter(project=project, state=BotStates.ENDED).exists()
 
+        has_created_bots_via_api = BotEvent.objects.filter(bot__project=project, event_type=BotEventTypes.JOIN_REQUESTED, metadata__source=BotCreationSource.API).exists()
+
         context = self.get_project_context(object_id, project)
         context.update(
             {
@@ -68,6 +73,7 @@ class ProjectDashboardView(LoginRequiredMixin, ProjectUrlContextMixin, View):
                     "has_credentials": zoom_credentials and deepgram_credentials,
                     "has_api_keys": has_api_keys,
                     "has_ended_bots": has_ended_bots,
+                    "has_created_bots_via_api": has_created_bots_via_api,
                 }
             }
         )
@@ -156,8 +162,23 @@ class CreateCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
 
                 if not all(credentials_data.values()):
                     return HttpResponse("Missing required credentials data", status=400)
+            elif credential_type == Credentials.CredentialTypes.ASSEMBLY_AI:
+                credentials_data = {"api_key": request.POST.get("api_key")}
+
+                if not all(credentials_data.values()):
+                    return HttpResponse("Missing required credentials data", status=400)
+            elif credential_type == Credentials.CredentialTypes.SARVAM:
+                credentials_data = {"api_key": request.POST.get("api_key")}
+
+                if not all(credentials_data.values()):
+                    return HttpResponse("Missing required credentials data", status=400)
             elif credential_type == Credentials.CredentialTypes.GOOGLE_TTS:
                 credentials_data = {"service_account_json": request.POST.get("service_account_json")}
+
+                if not all(credentials_data.values()):
+                    return HttpResponse("Missing required credentials data", status=400)
+            elif credential_type == Credentials.CredentialTypes.TEAMS_BOT_LOGIN:
+                credentials_data = {"username": request.POST.get("username"), "password": request.POST.get("password")}
 
                 if not all(credentials_data.values()):
                     return HttpResponse("Missing required credentials data", status=400)
@@ -179,8 +200,14 @@ class CreateCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
                 return render(request, "projects/partials/gladia_credentials.html", context)
             elif credential.credential_type == Credentials.CredentialTypes.OPENAI:
                 return render(request, "projects/partials/openai_credentials.html", context)
+            elif credential.credential_type == Credentials.CredentialTypes.ASSEMBLY_AI:
+                return render(request, "projects/partials/assembly_ai_credentials.html", context)
+            elif credential.credential_type == Credentials.CredentialTypes.SARVAM:
+                return render(request, "projects/partials/sarvam_credentials.html", context)
             elif credential.credential_type == Credentials.CredentialTypes.GOOGLE_TTS:
                 return render(request, "projects/partials/google_tts_credentials.html", context)
+            elif credential.credential_type == Credentials.CredentialTypes.TEAMS_BOT_LOGIN:
+                return render(request, "projects/partials/teams_bot_login_credentials.html", context)
             else:
                 return HttpResponse("Cannot render the partial for this credential type", status=400)
 
@@ -203,6 +230,12 @@ class ProjectCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
 
         google_tts_credentials = Credentials.objects.filter(project=project, credential_type=Credentials.CredentialTypes.GOOGLE_TTS).first()
 
+        assembly_ai_credentials = Credentials.objects.filter(project=project, credential_type=Credentials.CredentialTypes.ASSEMBLY_AI).first()
+
+        sarvam_credentials = Credentials.objects.filter(project=project, credential_type=Credentials.CredentialTypes.SARVAM).first()
+
+        teams_bot_login_credentials = Credentials.objects.filter(project=project, credential_type=Credentials.CredentialTypes.TEAMS_BOT_LOGIN).first()
+
         context = self.get_project_context(object_id, project)
         context.update(
             {
@@ -216,6 +249,12 @@ class ProjectCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
                 "gladia_credential_type": Credentials.CredentialTypes.GLADIA,
                 "openai_credentials": openai_credentials.get_credentials() if openai_credentials else None,
                 "openai_credential_type": Credentials.CredentialTypes.OPENAI,
+                "assembly_ai_credentials": assembly_ai_credentials.get_credentials() if assembly_ai_credentials else None,
+                "assembly_ai_credential_type": Credentials.CredentialTypes.ASSEMBLY_AI,
+                "sarvam_credentials": sarvam_credentials.get_credentials() if sarvam_credentials else None,
+                "sarvam_credential_type": Credentials.CredentialTypes.SARVAM,
+                "teams_bot_login_credentials": teams_bot_login_credentials.get_credentials() if teams_bot_login_credentials else None,
+                "teams_bot_login_credential_type": Credentials.CredentialTypes.TEAMS_BOT_LOGIN,
             }
         )
 
@@ -291,6 +330,12 @@ class ProjectBotsView(LoginRequiredMixin, ProjectUrlContextMixin, ListView):
         # Add filter parameters to context for maintaining state
         context["filter_params"] = {"start_date": self.request.GET.get("start_date", ""), "end_date": self.request.GET.get("end_date", ""), "states": self.request.GET.getlist("states")}
 
+        # Add flag to detect if create modal should be automatically opened
+        context["open_create_modal"] = self.request.GET.get("open_create_modal") == "true"
+
+        # Check if any bots in the current page have a join_at value
+        context["has_scheduled_bots"] = any(bot.join_at is not None for bot in context["bots"])
+
         return context
 
 
@@ -298,7 +343,11 @@ class ProjectBotDetailView(LoginRequiredMixin, ProjectUrlContextMixin, View):
     def get(self, request, object_id, bot_object_id):
         project = get_object_or_404(Project, object_id=object_id, organization=request.user.organization)
 
-        bot = get_object_or_404(Bot, object_id=bot_object_id, project=project)
+        try:
+            bot = Bot.objects.get(object_id=bot_object_id, project=project)
+        except Bot.DoesNotExist:
+            # Redirect to bots list if bot not found
+            return redirect("bots:project-bots", object_id=object_id)
 
         # Prefetch recordings with their utterances and participants
         bot.recordings.all().prefetch_related(models.Prefetch("utterances", queryset=Utterance.objects.select_related("participant")))
@@ -332,6 +381,13 @@ class ProjectWebhooksView(LoginRequiredMixin, ProjectUrlContextMixin, View):
         context["webhooks"] = WebhookSubscription.objects.filter(project=project).order_by("-created_at")
         context["webhook_options"] = [trigger_type for trigger_type in WebhookTriggerTypes]
         return render(request, "projects/project_webhooks.html", context)
+
+
+class ProjectProjectAndTeamView(LoginRequiredMixin, ProjectUrlContextMixin, View):
+    def get(self, request, object_id):
+        project = get_object_or_404(Project, object_id=object_id, organization=request.user.organization)
+        context = self.get_project_context(object_id, project)
+        return render(request, "projects/project_project_and_team.html", context)
 
 
 class CreateWebhookView(LoginRequiredMixin, ProjectUrlContextMixin, View):
@@ -487,3 +543,64 @@ class CreateCheckoutSessionView(LoginRequiredMixin, ProjectUrlContextMixin, View
 
         # Redirect directly to the Stripe checkout page
         return redirect(checkout_session.url)
+
+
+class CreateBotView(LoginRequiredMixin, ProjectUrlContextMixin, View):
+    def post(self, request, object_id):
+        try:
+            project = get_object_or_404(Project, object_id=object_id, organization=request.user.organization)
+
+            data = {
+                "meeting_url": request.POST.get("meeting_url"),
+                "bot_name": request.POST.get("bot_name") or "Meeting Bot",
+            }
+
+            bot, error = create_bot(data=data, source=BotCreationSource.DASHBOARD, project=project)
+            if error:
+                return HttpResponse(json.dumps(error), status=400)
+
+            # If this is a scheduled bot, we don't want to launch it yet.
+            if bot.state == BotStates.JOINING:
+                launch_bot(bot)
+
+            return HttpResponse("ok", status=200)
+        except Exception as e:
+            return HttpResponse(str(e), status=400)
+
+
+class CreateProjectView(LoginRequiredMixin, View):
+    def post(self, request):
+        name = request.POST.get("name")
+
+        if not name:
+            return HttpResponse("Project name is required", status=400)
+
+        if len(name) > 100:
+            return HttpResponse("Project name must be less than 100 characters", status=400)
+
+        # Create a new project for the user's organization
+        project = Project.objects.create(name=name, organization=request.user.organization)
+
+        # Redirect to the new project's dashboard
+        return redirect("bots:project-dashboard", object_id=project.object_id)
+
+
+class EditProjectView(LoginRequiredMixin, View):
+    def put(self, request, object_id):
+        project = get_object_or_404(Project, object_id=object_id, organization=request.user.organization)
+
+        # Parse the request body properly for PUT requests
+        put_data = QueryDict(request.body)
+        name = put_data.get("name")
+
+        if not name:
+            return HttpResponse("Project name is required", status=400)
+
+        if len(name) > 100:
+            return HttpResponse("Project name must be less than 100 characters", status=400)
+
+        # Update the project name
+        project.name = name
+        project.save()
+
+        return HttpResponse("ok", status=200)

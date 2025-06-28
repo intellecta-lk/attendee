@@ -25,12 +25,14 @@ class BotPodCreator:
             
         # Parse instance from version (matches your pattern of {hash}-{timestamp})
         self.app_instance = f"{self.app_name}-{self.app_version.split('-')[-1]}"
-        self.image = f"nduncan{self.app_name}/{self.app_name}:{self.app_version}"
+        default_pod_image = f"nduncan{self.app_name}/{self.app_name}"
+        self.image = f"{os.getenv('BOT_POD_IMAGE', default_pod_image)}:{self.app_version}"
 
     def create_bot_pod(
         self,
         bot_id: int,
         bot_name: Optional[str] = None,
+        bot_cpu_request: Optional[int] = None,
     ) -> Dict:
         """
         Create a bot pod with configuration from environment.
@@ -41,6 +43,9 @@ class BotPodCreator:
         """
         if bot_name is None:
             bot_name = f"bot-{bot_id}-{uuid.uuid4().hex[:8]}"
+
+        if bot_cpu_request is None:
+            bot_cpu_request = os.getenv("BOT_CPU_REQUEST", "4")
 
         # Set the command based on bot_id
         # Run entrypoint script first, then the bot command
@@ -71,7 +76,7 @@ class BotPodCreator:
                         command=command,
                         resources=client.V1ResourceRequirements(
                             requests={
-                                "cpu": os.getenv("BOT_CPU_REQUEST", "4"),
+                                "cpu": bot_cpu_request,
                                 "memory": os.getenv("BOT_MEMORY_REQUEST", "4Gi"),
                                 "ephemeral-storage": os.getenv("BOT_EPHEMERAL_STORAGE_REQUEST", "10Gi")
                             },

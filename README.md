@@ -17,7 +17,9 @@ See a [quick demo of the API](https://www.loom.com/embed/b738d02aabf84f489f0bfba
 
 ## Getting started
 
-Sign up for free on our hosted instance [here](https://app.attendee.dev/accounts/signup/).
+Sign up for free on our hosted instance [here](https://app.attendee.dev/accounts/signup/). 
+
+Interested in using Attendee at your company? Schedule a call [here](https://calendly.com/noah-attendee/30min). By self-hosting Attendee you can reduce costs by 10x compared to closed source vendors.
  
 ## Self hosting
 
@@ -82,15 +84,15 @@ To call the API you need the following
 
 1. Attendee API Key - These are created in the Attendee UI by creating an account in your Attendee instance, signing in and navigating to the 'API Keys' section in the sidebar.
 
-2. Zoom OAuth Credentials - These are the Zoom app client id and secret that uniquely identify your bot. We need these to join meetings. Directions on obtaining them [here](#obtaining-zoom-oauth-credentials).
+2. Zoom OAuth Credentials - Needed to join Zoom meetings. These are the Zoom app client id and secret that uniquely identify your bot. Directions on obtaining them [here](#obtaining-zoom-oauth-credentials).
 
-3. Deepgram API Key - We use Deepgram to generate recording transcripts. You can sign up for a free account [here](https://console.deepgram.com/signup), no credit card required.
+3. Deepgram API Key - Needed for transcribing Zoom meetings. You can sign up for an account [here](https://console.deepgram.com/signup), no credit card required and get 400 hours worth of free transcription.
 
 The Zoom OAuth credentials and Deepgram API key are entered into the Attendee UI in the 'Settings' section in the sidebar.
 
 ## Missing feature?
 
-Attendee is in very early beta, but functionality is being added rapidly. If the API is missing something you need, then open an issue in the repository. PRs are also welcome!
+We are rapidly adding features to Attendee. If the API is missing something you need, then open an issue in the repository or bring it up in the [Slack Community](https://join.slack.com/t/attendeecommu-rff8300/shared_invite/zt-2uhpam6p2-ZzLAoVrljbL2UEjqdSHrgQ). PRs are also welcome!
 
 ## Obtaining Zoom OAuth Credentials
 
@@ -129,13 +131,15 @@ See CONTRIBUTING.md for detailed instructions on how to contribute to Attendee.
 - [x] API Reference
 - [x] Audio input / output
 - [x] Video input / output
+- [x] Custom bot image 
 - [x] Google Meet support
 - [x] Speech support
 - [x] Automatically leave meetings
 - [x] Microsoft Teams support
 - [x] Webhooks for state changes
+- [x] Scheduled meetings
+- [ ] Attendee-Managed Calendar Integration
 - [ ] Audio input / output via websockets
 - [ ] [ZAK token](https://developers.zoom.us/docs/meeting-sdk/auth/#start-meetings-and-webinars-with-a-zoom-users-zak-token) and [Join token](https://developers.zoom.us/docs/api/meetings/#tag/meetings/GET/meetings/{meetingId}/jointoken/local_recording) support
-- [ ] Scheduled meetings
 
 Have suggestions for the roadmap? Join the [Slack Community](https://join.slack.com/t/attendeecommu-rff8300/shared_invite/zt-2uhpam6p2-ZzLAoVrljbL2UEjqdSHrgQ) or open an issue.

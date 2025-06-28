@@ -15,8 +15,8 @@ def calculate_normalized_rms(audio_bytes):
     return rms / 32768
 
 
-class IndividualAudioInputManager:
-    def __init__(self, *, save_utterance_callback, get_participant_callback, sample_rate):
+class PerParticipantNonStreamingAudioInputManager:
+    def __init__(self, *, save_utterance_callback, get_participant_callback, sample_rate, utterance_size_limit, silence_duration_limit):
         self.queue = queue.Queue()
 
         self.save_utterance_callback = save_utterance_callback
@@ -28,8 +28,8 @@ class IndividualAudioInputManager:
         self.first_nonsilent_audio_time = {}
         self.last_nonsilent_audio_time = {}
 
-        self.UTTERANCE_SIZE_LIMIT = 19200000  # 19.2 MB / 2 bytes per sample / 32,000 samples per second = 300 seconds of continuous audio
-        self.SILENCE_DURATION_LIMIT = 3  # seconds
+        self.UTTERANCE_SIZE_LIMIT = utterance_size_limit
+        self.SILENCE_DURATION_LIMIT = silence_duration_limit
         self.vad = webrtcvad.Vad()
 
     def add_chunk(self, speaker_id, chunk_time, chunk_bytes):
