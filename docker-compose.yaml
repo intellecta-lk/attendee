@@ -1,50 +1,90 @@
 services:
   attendee-worker-local:
     build: ./
-    # networks:
-    #   - attendee_network
+    volumes:
+     - .:/attendee
+    networks:
+      - attendee_network
     environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_URL=redis://redis:6379/5
       - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
-    command: celery -A attendee worker -l INFO
     healthcheck:
       test: ["CMD-SHELL", "celery inspect ping --destination celery@$$HOSTNAME"]
-      # interval: 30s
-      # timeout: 10s
-      # retries: 3
-      # start_period: 5s
+    # command: ["/bin/bash", "-c", "/opt/bin/entrypoint.sh && celery -A attendee worker -l INFO"]
+    command: celery -A attendee worker -l INFO
 
+  attendee-scheduler-local:
+    build: ./
+    volumes:
+     - .:/attendee
+    networks:
+      - attendee_network
+    environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_URL=redis://redis:6379/5
+      - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
+    command: ["/bin/bash", "-c", "/opt/bin/entrypoint.sh && python manage.py run_scheduler"]
 
   attendee-app-local:
     build: ./
-    # networks:
-    #   - attendee_network
+    volumes:
+     - .:/attendee
+    networks:
+      - attendee_network
     ports:
-      - "8000"
+      - "8000:8000"
     environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_URL=redis://redis:6379/5
       - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-attendee.settings.internal}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_RECORDING_STORAGE_BUCKET_NAME=${AWS_RECORDING_STORAGE_BUCKET_NAME}
-      - DATABASE_URL=${DATABASE_URL}
-      - REDIS_URL=${REDIS_URL}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
-    # command: python manage.py runserver 0.0.0.0:8000
-    command: gunicorn --bind 0.0.0.0:8000 attendee.wsgi
     healthcheck:
       test: ["CMD" , "curl" ,"-f", "http://localhost:8000/"]
-      # test: wget --no-verbose --tries=1 --spider http://localhost:8000 || exit 1
-      # interval: 10s
-      # retries: 5
-      # timeout: 10s
+    # command: python manage.py runserver 0.0.0.0:8000
+    command: gunicorn --bind 0.0.0.0:8000 attendee.wsgi
 
-# networks:
-#   attendee_network:
-#     driver: bridge
+  postgres:
+    image: postgres:15.3-alpine
+    environment:
+      POSTGRES_DB: attendee_development
+      POSTGRES_USER: attendee_development_user
+      POSTGRES_PASSWORD: attendee_development_user
+      PGDATA: /data/postgres
+    volumes:
+       - postgres:/data/postgres
+    networks:
+      - attendee_network
+    restart: unless-stopped
+
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - attendee_network
+    restart: unless-stopped
+    volumes:
+      - redis:/data/redis
+
+networks:
+  attendee_network:
+    driver: bridge
+
+volumes:
+  postgres:
+  redis:
+  
