@@ -5,7 +5,7 @@ from enum import Enum
 
 import redis
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.urls import reverse
 
 from .models import (
@@ -22,6 +22,9 @@ from .models import (
     Project,
     Recording,
     TranscriptionTypes,
+    WebhookSecret,
+    WebhookSubscription,
+    WebhookTriggerTypes,
 )
 from .serializers import (
     CreateBotSerializer,
@@ -109,8 +112,8 @@ class BotCreationSource(str, Enum):
 def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple[Bot | None, dict | None]:
     # Given them a small grace period before we start rejecting requests
     if project.organization.out_of_credits():
-        logger.error(f"Organization {project.organization.id} has insufficient credits. Please add credits in the Settings -> Billing page.")
-        return None, {"error": "Organization has run out of credits. Please add more credits in the Settings -> Billing page."}
+        logger.error(f"Organization {project.organization.id} has insufficient credits. Please add credits in the Account -> Billing page.")
+        return None, {"error": "Organization has run out of credits. Please add more credits in the Account -> Billing page."}
 
     serializer = CreateBotSerializer(data=data)
     if not serializer.is_valid():
@@ -133,7 +136,11 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
     bot_image = serializer.validated_data["bot_image"]
     bot_chat_message = serializer.validated_data["bot_chat_message"]
     metadata = serializer.validated_data["metadata"]
+    websocket_settings = serializer.validated_data["websocket_settings"]
     join_at = serializer.validated_data["join_at"]
+    deduplication_key = serializer.validated_data["deduplication_key"]
+    webhook_subscriptions = serializer.validated_data["webhooks"]
+    callback_settings = serializer.validated_data["callback_settings"]
     initial_state = BotStates.SCHEDULED if join_at else BotStates.READY
 
     settings = {
@@ -143,41 +150,168 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
         "debug_settings": debug_settings,
         "automatic_leave_settings": automatic_leave_settings,
         "teams_settings": teams_settings,
+        "websocket_settings": websocket_settings,
+        "callback_settings": callback_settings,
     }
 
-    with transaction.atomic():
-        bot = Bot.objects.create(
-            project=project,
-            meeting_url=meeting_url,
-            name=bot_name,
-            settings=settings,
-            metadata=metadata,
-            join_at=join_at,
-            state=initial_state,
-        )
+    try:
+        with transaction.atomic():
+            bot = Bot.objects.create(
+                project=project,
+                meeting_url=meeting_url,
+                name=bot_name,
+                settings=settings,
+                metadata=metadata,
+                join_at=join_at,
+                deduplication_key=deduplication_key,
+                state=initial_state,
+            )
 
-        Recording.objects.create(
-            bot=bot,
-            recording_type=bot.recording_type(),
-            transcription_type=TranscriptionTypes.NON_REALTIME,
-            transcription_provider=transcription_provider_from_meeting_url_and_transcription_settings(meeting_url, transcription_settings),
-            is_default_recording=True,
-        )
+            Recording.objects.create(
+                bot=bot,
+                recording_type=bot.recording_type(),
+                transcription_type=TranscriptionTypes.NON_REALTIME,
+                transcription_provider=transcription_provider_from_meeting_url_and_transcription_settings(meeting_url, transcription_settings),
+                is_default_recording=True,
+            )
 
-        if bot_image:
-            try:
+            if bot_image:
                 create_bot_media_request_for_image(bot, bot_image)
-            except ValidationError as e:
-                return None, {"error": e.messages[0]}
 
-        if bot_chat_message:
-            try:
+            if bot_chat_message:
                 create_bot_chat_message_request(bot, bot_chat_message)
-            except ValidationError as e:
-                return None, {"error": e.messages[0]}
 
-        if bot.state == BotStates.READY:
-            # Try to transition the state from READY to JOINING
-            BotEventManager.create_event(bot=bot, event_type=BotEventTypes.JOIN_REQUESTED, event_metadata={"source": source})
+            # Create bot-level webhook subscriptions if provided
+            if webhook_subscriptions:
+                create_webhook_subscriptions(webhook_subscriptions, project, bot)
 
-        return bot, None
+            if bot.state == BotStates.READY:
+                # Try to transition the state from READY to JOINING
+                BotEventManager.create_event(bot=bot, event_type=BotEventTypes.JOIN_REQUESTED, event_metadata={"source": source})
+
+            return bot, None
+
+    except ValidationError as e:
+        logger.error(f"ValidationError creating bot: {e}")
+        return None, {"error": e.messages[0]}
+    except Exception as e:
+        if isinstance(e, IntegrityError) and "unique_bot_deduplication_key" in str(e):
+            logger.error(f"IntegrityError due to unique_bot_deduplication_key constraint violation creating bot: {e}")
+            return None, {"error": "Deduplication key already in use. A bot in a non-terminal state with this deduplication key already exists. Please use a different deduplication key or wait for that bot to terminate."}
+
+        logger.error(f"Error creating bot: {e}")
+        return None, {"error": str(e)}
+
+
+def validate_webhook_data(url, triggers, project, bot=None):
+    """
+    Validates webhook URL and triggers for both project-level and bot-level webhooks.
+    Returns error message if validation fails.
+
+    Args:
+        url: The webhook URL
+        triggers: List of trigger types as strings
+        project: The Project instance
+        bot: Optional Bot instance for bot-level webhooks
+
+    Returns:
+        error_message: None if validation succeeds, otherwise an error message
+    """
+
+    # Check if the trigger codes are valid
+    for trigger in triggers:
+        if WebhookTriggerTypes.api_code_to_trigger_type(trigger) is None:
+            return f"Invalid webhook trigger type: {trigger}"
+
+    # Check if URL is valid
+    if not url.startswith("https://"):
+        return "webhook URL must start with https://"
+
+    # Check for duplicate URLs
+    existing_webhook_query = project.webhook_subscriptions.filter(url=url)
+    if bot:
+        # For bot-level webhooks, check if URL already exists for this bot
+        if existing_webhook_query.filter(bot=bot).exists():
+            return "URL already subscribed for this bot"
+    else:
+        # For project-level webhooks, check if URL already exists for project
+        if existing_webhook_query.filter(bot__isnull=True).exists():
+            return "URL already subscribed"
+
+    # Webhook limit check
+    if bot:
+        # For bot-level webhooks, check the limit (only count bot-level webhooks)
+        bot_level_webhooks = WebhookSubscription.objects.filter(project=project, bot=bot).count()
+        if bot_level_webhooks >= 2:
+            return "You have reached the maximum number of webhooks for a single bot"
+    else:
+        # For project-level webhooks, check the limit (only count project-level webhooks)
+        project_level_webhooks = WebhookSubscription.objects.filter(project=project, bot__isnull=True).count()
+        if project_level_webhooks >= 2:
+            return "You have reached the maximum number of webhooks"
+
+    # If we get here, the webhook data is valid
+    return None
+
+
+def create_webhook_subscription(url, triggers, project, bot=None):
+    """
+    Creates a single webhook subscription for a project or bot.
+
+    Args:
+        url: The webhook URL
+        triggers: List of trigger types (api codes as strings)
+        project: The Project instance
+        bot: Optional Bot instance for bot-level webhooks
+
+    Returns:
+        None
+
+    Raises:
+        ValidationError: If the webhook data is invalid
+    """
+    # Validate the webhook data
+    error = validate_webhook_data(url, triggers, project, bot)
+    if error:
+        raise ValidationError(error)
+
+    # Get or create webhook secret for the project
+    WebhookSecret.objects.get_or_create(project=project)
+
+    # Map the triggers to integers
+    triggers_mapped_to_integers = [WebhookTriggerTypes.api_code_to_trigger_type(trigger) for trigger in triggers]
+
+    # Create the webhook subscription
+    WebhookSubscription.objects.create(
+        project=project,
+        bot=bot,
+        url=url,
+        triggers=triggers_mapped_to_integers,
+    )
+
+
+def create_webhook_subscriptions(webhook_data_list, project, bot=None):
+    """
+    Creates multiple webhook subscriptions for a project or bot.
+
+    Args:
+        webhook_data_list: List of webhook data dictionaries with 'url' and 'triggers'
+        project: The Project instance
+        bot: Optional Bot instance for bot-level webhooks
+
+    Returns:
+        None
+
+    Raises:
+        ValidationError: If the webhook data is invalid
+        Exception: If there is an error creating the webhook subscriptions
+    """
+    if not webhook_data_list:
+        return
+
+    # Create all webhook subscriptions
+    for webhook_data in webhook_data_list:
+        url = webhook_data.get("url", "")
+        triggers = webhook_data.get("triggers", [])
+
+        create_webhook_subscription(url, triggers, project, bot)

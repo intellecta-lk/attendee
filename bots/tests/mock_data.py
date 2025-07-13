@@ -1,4 +1,8 @@
+import os
 import time
+from unittest.mock import MagicMock
+
+import numpy as np
 
 
 class MockVideoFrame:
@@ -56,6 +60,12 @@ class MockPCMAudioFrame:
     def GetBuffer(self):
         return self.buffer
 
+    def GetSampleRate(self):
+        return 32000
+
+    def GetChannelNum(self):
+        return 1
+
 
 class MockF32AudioFrame:
     def __init__(self):
@@ -77,3 +87,81 @@ class MockF32AudioFrame:
 
     def GetBuffer(self):
         return self.buffer
+
+
+# Simulate video data arrival
+# Create a mock video message in the format expected by process_video_frame
+def create_mock_video_frame(width=640, height=480):
+    # Create a bytearray for the message
+    mock_video_message = bytearray()
+
+    # Add message type (2 for VIDEO) as first 4 bytes
+    mock_video_message.extend((2).to_bytes(4, byteorder="little"))
+
+    # Add timestamp (12345) as next 8 bytes
+    mock_video_message.extend((12345).to_bytes(8, byteorder="little"))
+
+    # Add stream ID length (4) and stream ID ("main") - total 8 bytes
+    stream_id = "main"
+    mock_video_message.extend(len(stream_id).to_bytes(4, byteorder="little"))
+    mock_video_message.extend(stream_id.encode("utf-8"))
+
+    # Add width and height - 8 bytes
+    mock_video_message.extend(width.to_bytes(4, byteorder="little"))
+    mock_video_message.extend(height.to_bytes(4, byteorder="little"))
+
+    # Create I420 frame data (Y, U, V planes)
+    # Y plane: width * height bytes
+    y_plane_size = width * height
+    y_plane = np.ones(y_plane_size, dtype=np.uint8) * 128  # mid-gray
+
+    # U and V planes: (width//2 * height//2) bytes each
+    uv_width = (width + 1) // 2  # half_ceil implementation
+    uv_height = (height + 1) // 2
+    uv_plane_size = uv_width * uv_height
+
+    u_plane = np.ones(uv_plane_size, dtype=np.uint8) * 128  # no color tint
+    v_plane = np.ones(uv_plane_size, dtype=np.uint8) * 128  # no color tint
+
+    # Add the frame data to the message
+    mock_video_message.extend(y_plane.tobytes())
+    mock_video_message.extend(u_plane.tobytes())
+    mock_video_message.extend(v_plane.tobytes())
+
+    return mock_video_message
+
+
+def create_mock_file_uploader():
+    mock_file_uploader = MagicMock()
+    mock_file_uploader.upload_file.return_value = None
+    mock_file_uploader.wait_for_upload.return_value = None
+    mock_file_uploader.delete_file.return_value = None
+    mock_file_uploader.key = "test-recording-key"
+    return mock_file_uploader
+
+
+def create_mock_google_meet_driver():
+    mock_driver = MagicMock()
+    mock_driver.execute_script.side_effect = [
+        None,  # First call (window.ws.enableMediaSending())
+        12345,  # Second call (performance.timeOrigin)
+    ]
+
+    # Make save_screenshot actually create an empty PNG file
+    def mock_save_screenshot(filepath):
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        # Create empty file
+        with open(filepath, "wb") as f:
+            # Write minimal valid PNG file bytes
+            f.write(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+        return filepath
+
+    mock_driver.save_screenshot.side_effect = mock_save_screenshot
+    return mock_driver
+
+
+def create_mock_display():
+    mock_display = MagicMock()
+    mock_display.new_display_var = ":99"
+    return mock_display

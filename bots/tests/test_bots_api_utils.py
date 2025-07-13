@@ -1,11 +1,12 @@
 from datetime import timedelta
 
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import Organization
-from bots.bots_api_utils import BotCreationSource, create_bot, validate_meeting_url_and_credentials
-from bots.models import BotEventTypes, BotStates, Project
+from bots.bots_api_utils import BotCreationSource, create_bot, create_webhook_subscription, validate_meeting_url_and_credentials
+from bots.models import Bot, BotEventTypes, BotStates, Project, WebhookSubscription, WebhookTriggerTypes
 
 
 class TestValidateMeetingUrlAndCredentials(TestCase):
@@ -58,6 +59,7 @@ class TestCreateBot(TestCase):
     def test_create_bot_with_google_meet_url_with_http(self):
         bot, error = create_bot(data={"meeting_url": "http://meet.google.com/abc-defg-hij", "bot_name": "Test Bot"}, source=BotCreationSource.DASHBOARD, project=self.project)
         self.assertIsNone(bot)
+        self.assertEqual(Bot.objects.count(), 0)
         self.assertIsNotNone(error)
         self.assertEqual(error, {"meeting_url": ["Google Meet URL must start with https://meet.google.com/"]})
 
@@ -76,3 +78,166 @@ class TestCreateBot(TestCase):
         # Verify no events are created for scheduled bots
         events = bot.bot_events
         self.assertEqual(events.count(), 0)
+
+    def test_create_bot_with_invalid_image(self):
+        bot, error = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot", "bot_image": {"type": "image/png", "data": "iVBORAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNone(bot)
+        self.assertEqual(Bot.objects.count(), 0)
+        self.assertIsNotNone(error)
+        bot_image_errors = error["bot_image"]["non_field_errors"]
+        error_message = str(bot_image_errors[0])
+        self.assertEqual(error_message, "Data is not a valid PNG image. This site can generate base64 encoded PNG images to test with: https://png-pixel.com")
+
+    def test_with_too_many_webhooks(self):
+        bot, error = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot", "webhooks": [{"url": "https://example.com", "triggers": ["bot.state_change"]}, {"url": "https://example2.com", "triggers": ["bot.state_change"]}, {"url": "https://example3.com", "triggers": ["bot.state_change"]}]}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNone(bot)
+        self.assertEqual(Bot.objects.count(), 0)
+        self.assertIsNotNone(error)
+        self.assertEqual(error, {"error": "You have reached the maximum number of webhooks for a single bot"})
+
+    def test_with_invalid_webhook_trigger(self):
+        bot, error = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot", "webhooks": [{"url": "https://example.com", "triggers": ["invalid_trigger"]}]}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNone(bot)
+        self.assertEqual(Bot.objects.count(), 0)
+        self.assertIsNotNone(error)
+        self.assertIn("webhooks", error)
+        self.assertIsInstance(error["webhooks"], list)
+        self.assertIn("'invalid_trigger' is not one of", str(error["webhooks"][0]))
+
+    def test_with_invalid_webhook_url(self):
+        bot, error = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot", "webhooks": [{"url": "http://example.com", "triggers": ["bot.state_change"]}]}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNone(bot)
+        self.assertEqual(Bot.objects.count(), 0)
+        self.assertIsNotNone(error)
+        self.assertIn("webhooks", error)
+        self.assertIsInstance(error["webhooks"], list)
+        self.assertIn("does not match '^https://.*'", str(error["webhooks"][0]))
+
+    def test_with_duplicate_webhook_url(self):
+        bot, error = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot", "webhooks": [{"url": "https://example.com", "triggers": ["bot.state_change"]}, {"url": "https://example.com", "triggers": ["bot.state_change"]}]}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNone(bot)
+        self.assertEqual(Bot.objects.count(), 0)
+        self.assertIsNotNone(error)
+        self.assertEqual(error, {"error": "URL already subscribed for this bot"})
+
+    def test_create_bot_with_duplicate_deduplication_key(self):
+        """Test creating a bot with a duplicate deduplication key in the same project."""
+        deduplication_key = "test-key-123"
+        # First bot creation should succeed
+        bot1, error1 = create_bot(
+            data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 1", "deduplication_key": deduplication_key},
+            source=BotCreationSource.API,
+            project=self.project,
+        )
+        self.assertIsNotNone(bot1)
+        self.assertIsNone(error1)
+
+        # Second bot creation with the same key should fail
+        bot2, error2 = create_bot(
+            data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 2", "deduplication_key": deduplication_key},
+            source=BotCreationSource.API,
+            project=self.project,
+        )
+        self.assertIsNone(bot2)
+        self.assertIsNotNone(error2)
+        self.assertEqual(error2, {"error": "Deduplication key already in use. A bot in a non-terminal state with this deduplication key already exists. Please use a different deduplication key or wait for that bot to terminate."})
+
+    def test_create_bot_with_duplicate_deduplication_key_different_projects(self):
+        """Test that duplicate deduplication keys are allowed in different projects."""
+        deduplication_key = "test-key-456"
+        organization = Organization.objects.create(name="Test Organization 2")
+        project2 = Project.objects.create(name="Test Project 2", organization=organization)
+
+        # First bot creation should succeed
+        bot1, error1 = create_bot(
+            data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 1", "deduplication_key": deduplication_key},
+            source=BotCreationSource.API,
+            project=self.project,
+        )
+        self.assertIsNotNone(bot1)
+        self.assertIsNone(error1)
+
+        # Second bot creation in a different project with the same key should also succeed
+        bot2, error2 = create_bot(
+            data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 2", "deduplication_key": deduplication_key},
+            source=BotCreationSource.API,
+            project=project2,
+        )
+        self.assertIsNotNone(bot2)
+        self.assertIsNone(error2)
+        self.assertEqual(Bot.objects.count(), 2)
+
+    def test_create_bot_with_duplicate_deduplication_key_bot_in_terminal_state(self):
+        """Test that a new bot can be created with a deduplication key if the existing bot is in a terminal state."""
+        deduplication_key = "test-key-789"
+
+        # First bot creation should succeed
+        bot1, error1 = create_bot(
+            data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 1", "deduplication_key": deduplication_key},
+            source=BotCreationSource.API,
+            project=self.project,
+        )
+        self.assertIsNotNone(bot1)
+        self.assertIsNone(error1)
+
+        # Move the first bot to a terminal state
+        bot1.state = BotStates.ENDED
+        bot1.save()
+
+        # Second bot creation with the same key should now succeed
+        bot2, error2 = create_bot(
+            data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 2", "deduplication_key": deduplication_key},
+            source=BotCreationSource.API,
+            project=self.project,
+        )
+        self.assertIsNotNone(bot2)
+        self.assertIsNone(error2)
+        self.assertEqual(Bot.objects.count(), 2)
+
+    def test_create_bot_without_deduplication_key(self):
+        """Test that multiple bots can be created without a deduplication key."""
+        # First bot creation should succeed
+        bot1, error1 = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 1"}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNotNone(bot1)
+        self.assertIsNone(error1)
+
+        # Second bot creation without a key should also succeed
+        bot2, error2 = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 2"}, source=BotCreationSource.API, project=self.project)
+        self.assertIsNotNone(bot2)
+        self.assertIsNone(error2)
+        self.assertEqual(Bot.objects.count(), 2)
+
+
+class TestCreateWebhookSubscription(TestCase):
+    def setUp(self):
+        organization = Organization.objects.create(name="Test Organization")
+        self.project = Project.objects.create(name="Test Project", organization=organization)
+
+    def test_create_webhook_subscription(self):
+        self.assertEqual(WebhookSubscription.objects.count(), 0)
+        create_webhook_subscription("https://example.com", ["bot.state_change"], self.project)
+        webhook_subscription = WebhookSubscription.objects.get(url="https://example.com")
+        self.assertEqual(webhook_subscription.triggers, [WebhookTriggerTypes.BOT_STATE_CHANGE])
+        self.assertEqual(webhook_subscription.project, self.project)
+        self.assertIsNone(webhook_subscription.bot)
+        self.assertEqual(webhook_subscription.is_active, True)
+        self.assertEqual(WebhookSubscription.objects.count(), 1)
+
+    def test_create_webhook_subscription_with_invalid_url(self):
+        with self.assertRaises(ValidationError):
+            create_webhook_subscription("http://example.com", ["bot.state_change"], self.project)
+
+    def test_create_webhook_subscription_with_invalid_triggers(self):
+        with self.assertRaises(ValidationError):
+            create_webhook_subscription("https://example.com", ["invalid_trigger"], self.project)
+
+    def test_create_webhook_subscription_with_duplicate_url(self):
+        create_webhook_subscription("https://example.com", ["bot.state_change"], self.project)
+        with self.assertRaises(ValidationError):
+            create_webhook_subscription("https://example.com", ["bot.state_change"], self.project)
+
+    def test_create_webhook_subscription_with_too_many_webhooks(self):
+        for i in range(2):
+            create_webhook_subscription(f"https://example{i}.com", ["bot.state_change"], self.project)
+        with self.assertRaises(ValidationError):
+            create_webhook_subscription("https://example3.com", ["bot.state_change"], self.project)

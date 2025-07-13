@@ -163,6 +163,7 @@ class BotImageSerializer(serializers.Serializer):
                         "type": "string",
                         "description": "The language code for Teams closed captions (e.g. 'en-us'). This will change the closed captions language for everyone in the meeting, not just the bot. See here for available languages and codes: https://docs.google.com/spreadsheets/d/1F-1iLJ_4btUZJkZcD2m5sF3loqGbB0vTzgOubwQTb5o/edit?usp=sharing",
                     },
+                    "merge_consecutive_captions": {"type": "boolean", "description": "The captions from Google Meet can end in the middle of a sentence, which is not ideal. This setting deals with that by merging consecutive captions for a given speaker that occur close together in time. Turned off by default."},
                 },
                 "additionalProperties": False,
             },
@@ -348,6 +349,45 @@ class AutomaticLeaveSettingsJSONField(serializers.JSONField):
     pass
 
 
+def get_webhook_trigger_enum():
+    """Get available webhook trigger types from models"""
+    from .models import WebhookTriggerTypes
+
+    return list(WebhookTriggerTypes._get_mapping().values())
+
+
+@extend_schema_field(
+    {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The webhook URL (must be HTTPS)",
+                },
+                "triggers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": get_webhook_trigger_enum(),
+                    },
+                    "description": "List of webhook trigger types",
+                    "uniqueItems": True,
+                },
+            },
+            "required": ["url", "triggers"],
+            "additionalProperties": False,
+        },
+        "description": "List of webhook subscriptions for this bot",
+    }
+)
+class WebhooksJSONField(serializers.JSONField):
+    """Field for webhook subscriptions with validation"""
+
+    pass
+
+
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
@@ -400,6 +440,53 @@ class BotChatMessageRequestSerializer(serializers.Serializer):
         return value
 
 
+@extend_schema_field(
+    {
+        "type": "object",
+        "properties": {
+            "audio": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL of the websocket to use for receiving meeting audio in real time and having the bot output audio in real time. It must start with wss://. See https://docs.attendee.dev/guides/realtime-audio-input-and-output for details on how to receive and send audio through the websocket connection.",
+                    },
+                    "sample_rate": {
+                        "type": "integer",
+                        "enum": [8000, 16000, 24000],
+                        "default": 16000,
+                        "description": "The sample rate of the audio to send. Can be 8000, 16000, or 24000. Defaults to 16000.",
+                    },
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            }
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+)
+class WebsocketSettingsJSONField(serializers.JSONField):
+    pass
+
+
+@extend_schema_field(
+    {
+        "type": "object",
+        "properties": {
+            "zoom_tokens_url": {
+                "type": "string",
+                "description": 'URL of an endpoint on your server that returns Zoom authentication tokens the bot will use when it joins the meeting. Our server will make a POST request to this URL with information about the bot and expects a JSON response with the format: {"zak_token": "<zak_token>", "join_token": "<join_token>", "app_privilege_token": "<app_privilege_token>"}. Not every token needs to be provided, i.e. you can reply with {"zak_token": "<zak_token>"}.',
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+)
+class CallbackSettingsJSONField(serializers.JSONField):
+    pass
+
+
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
@@ -419,6 +506,81 @@ class CreateBotSerializer(serializers.Serializer):
     metadata = MetadataJSONField(help_text="JSON object containing metadata to associate with the bot", required=False, default=None)
     bot_chat_message = BotChatMessageRequestSerializer(help_text="The chat message the bot sends after it joins the meeting", required=False, default=None)
     join_at = serializers.DateTimeField(help_text="The time the bot should join the meeting. ISO 8601 format, e.g. 2025-06-13T12:00:00Z", required=False, default=None)
+    deduplication_key = serializers.CharField(help_text="Optional key for deduplicating bots. If a bot with this key already exists in a non-terminal state, the new bot will not be created and an error will be returned.", required=False, default=None)
+    webhooks = WebhooksJSONField(
+        help_text="List of webhook subscriptions to create for this bot. Each item should have 'url' and 'triggers' fields.",
+        required=False,
+        default=None,
+    )
+
+    callback_settings = CallbackSettingsJSONField(
+        help_text="Callback urls for the bot to call when it needs to fetch certain data.",
+        required=False,
+        default=None,
+    )
+
+    WEBHOOKS_SCHEMA = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "pattern": "^https://.*",
+                },
+                "triggers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": get_webhook_trigger_enum(),
+                    },
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+            },
+            "required": ["url", "triggers"],
+            "additionalProperties": False,
+        },
+    }
+
+    def validate_webhooks(self, value):
+        if value is None:
+            return value
+
+        try:
+            jsonschema.validate(instance=value, schema=self.WEBHOOKS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        return value
+
+    CALLBACK_SETTINGS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "zoom_tokens_url": {
+                "type": "string",
+                "pattern": "^https://.*",
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    def validate_callback_settings(self, value):
+        if value is None:
+            return value
+
+        try:
+            jsonschema.validate(instance=value, schema=self.CALLBACK_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        # Validate that zoom_tokens_url is a proper HTTPS URL
+        zoom_tokens_url = value.get("zoom_tokens_url")
+        if zoom_tokens_url and not zoom_tokens_url.lower().startswith("https://"):
+            raise serializers.ValidationError({"zoom_tokens_url": "URL must start with https://"})
+
+        return value
 
     transcription_settings = TranscriptionSettingsJSONField(
         help_text="The transcription settings for the bot, e.g. {'deepgram': {'language': 'en'}}",
@@ -491,6 +653,7 @@ class CreateBotSerializer(serializers.Serializer):
                         "type": "string",
                         "enum": ["ar-sa", "ar-ae", "bg-bg", "ca-es", "zh-cn", "zh-hk", "zh-tw", "hr-hr", "cs-cz", "da-dk", "nl-be", "nl-nl", "en-au", "en-ca", "en-in", "en-nz", "en-gb", "en-us", "et-ee", "fi-fi", "fr-ca", "fr-fr", "de-de", "de-ch", "el-gr", "he-il", "hi-in", "hu-hu", "id-id", "it-it", "ja-jp", "ko-kr", "lv-lv", "lt-lt", "nb-no", "pl-pl", "pt-br", "pt-pt", "ro-ro", "ru-ru", "sr-rs", "sk-sk", "sl-si", "es-mx", "es-es", "sv-se", "th-th", "tr-tr", "uk-ua", "vi-vn", "cy-gb"],
                     },
+                    "merge_consecutive_captions": {"type": "boolean", "description": "The captions from Google Meet can end in the middle of a sentence, which is not ideal. This setting deals with that by merging consecutive captions for a given speaker that occur close together in time. Turned off by default."},
                 },
                 "required": [],
                 "additionalProperties": False,
@@ -561,6 +724,54 @@ class CreateBotSerializer(serializers.Serializer):
 
         if value.get("deepgram", {}).get("callback") and value.get("deepgram", {}).get("detect_language"):
             raise serializers.ValidationError({"transcription_settings": "Language detection is not supported for streaming transcription. Please pass language='multi' instead of detect_language=true."})
+
+        return value
+
+    websocket_settings = WebsocketSettingsJSONField(help_text="The websocket settings for the bot, e.g. {'audio': {'url': 'wss://example.com/audio', 'sample_rate': 16000}}", required=False, default=None)
+
+    WEBSOCKET_SETTINGS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "audio": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL of the websocket to use for receiving meeting audio in real time and having the bot output audio in real time. It must start with wss://. See https://docs.attendee.dev/guides/realtime-audio-input-and-output for details on how to receive and send audio through the websocket connection.",
+                    },
+                    "sample_rate": {
+                        "type": "integer",
+                        "enum": [8000, 16000, 24000],
+                    },
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            }
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    def validate_websocket_settings(self, value):
+        if value is None:
+            return value
+
+        # Set default sample rate before validation
+        if "audio" in value and value.get("audio"):
+            if "sample_rate" not in value["audio"]:
+                value["audio"]["sample_rate"] = 16000
+
+        try:
+            jsonschema.validate(instance=value, schema=self.WEBSOCKET_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        # Validate websocket URL format if provided
+        if "audio" in value and value.get("audio"):
+            audio_url = value.get("audio", {}).get("url")
+            if audio_url:
+                if not audio_url.lower().startswith("wss://"):
+                    raise serializers.ValidationError({"audio": {"url": "URL must start with wss://"}})
 
         return value
 

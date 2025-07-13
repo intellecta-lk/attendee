@@ -4,7 +4,7 @@ from django.core.files.base import ContentFile
 from django.test import TransactionTestCase
 from django.test.utils import override_settings
 
-from bots.models import Bot, BotDebugScreenshot, BotEvent, BotEventTypes, BotStates, ChatMessage, ChatMessageToOptions, Organization, Participant, Project, Recording, RecordingStates, Utterance
+from bots.models import Bot, BotDebugScreenshot, BotEvent, BotEventTypes, BotStates, ChatMessage, ChatMessageToOptions, Organization, Participant, Project, Recording, RecordingStates, Utterance, WebhookSubscription, WebhookTriggerTypes
 
 
 def mock_file_field_delete_sets_name_to_none(instance, save=True):
@@ -71,6 +71,13 @@ class TestBotDeletion(TransactionTestCase):
 
         self.participant2 = Participant.objects.create(bot=self.bot2, uuid="participant2", full_name="Test Participant 2")
 
+        # Create webhook subscriptions for each bot
+        self.webhook_subscription1 = WebhookSubscription.objects.create(bot=self.bot1, project=self.project, url="https://test.com/webhook1", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+        self.webhook_subscription2 = WebhookSubscription.objects.create(bot=self.bot2, project=self.project, url="https://test.com/webhook2", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+
+        # Create project level webhook subscription
+        self.project_webhook_subscription = WebhookSubscription.objects.create(project=self.project, url="https://test.com/project_webhook", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+
         # Create recordings for each bot
         self.recording1 = Recording.objects.create(bot=self.bot1, recording_type=1, transcription_type=1, state=RecordingStates.COMPLETE)
         # Add a file to the recording
@@ -82,7 +89,6 @@ class TestBotDeletion(TransactionTestCase):
 
         # Create utterances for each recording
         self.utterance1 = Utterance.objects.create(recording=self.recording1, participant=self.participant1, audio_blob=b"test audio 1", timestamp_ms=1000, duration_ms=500)
-
         self.utterance2 = Utterance.objects.create(recording=self.recording2, participant=self.participant2, audio_blob=b"test audio 2", timestamp_ms=1000, duration_ms=500)
 
         # Create chat messages for each bot
@@ -128,6 +134,7 @@ class TestBotDeletion(TransactionTestCase):
         self.assertEqual(ChatMessage.objects.filter(bot=self.bot1).count(), 1)
         self.assertEqual(BotEvent.objects.filter(bot=self.bot1).count(), 1)
         self.assertEqual(BotDebugScreenshot.objects.filter(bot_event__bot=self.bot1).count(), 1)
+        self.assertEqual(WebhookSubscription.objects.filter(bot=self.bot1).count(), 1)
 
     def test_hard_delete_bot_with_credit_transactions_fails(self):
         """Test that hard deleting a bot fails when there are CreditTransaction references (PROTECT)"""
@@ -154,6 +161,9 @@ class TestBotDeletion(TransactionTestCase):
         # Verify credit transaction still exists
         self.assertEqual(self.bot1.credit_transactions.count(), 1)
 
+        # Verify webhook subscription still exists
+        self.assertEqual(WebhookSubscription.objects.filter(bot=self.bot1).count(), 1)
+
     def test_hard_delete_clean_bot_success(self):
         """Test that hard deleting a bot succeeds when there are no PROTECT constraints"""
         # Create a clean bot without utterances or credit transactions
@@ -170,6 +180,8 @@ class TestBotDeletion(TransactionTestCase):
 
         clean_screenshot = BotDebugScreenshot.objects.create(bot_event=clean_event)
 
+        clean_webhook_subscription = WebhookSubscription.objects.create(bot=clean_bot, project=self.project, url="https://test.com/clean", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+
         # Store counts before deletion
         initial_bot_count = Bot.objects.count()
         initial_participant_count = Participant.objects.count()
@@ -177,7 +189,7 @@ class TestBotDeletion(TransactionTestCase):
         initial_chat_message_count = ChatMessage.objects.count()
         initial_bot_event_count = BotEvent.objects.count()
         initial_screenshot_count = BotDebugScreenshot.objects.count()
-
+        initial_webhook_subscription_count = WebhookSubscription.objects.count()
         # Hard delete the clean bot - this should succeed
         clean_bot.delete()
 
@@ -191,6 +203,7 @@ class TestBotDeletion(TransactionTestCase):
         self.assertFalse(ChatMessage.objects.filter(id=clean_chat_message.id).exists())
         self.assertFalse(BotEvent.objects.filter(id=clean_event.id).exists())
         self.assertFalse(BotDebugScreenshot.objects.filter(id=clean_screenshot.id).exists())
+        self.assertFalse(WebhookSubscription.objects.filter(id=clean_webhook_subscription.id).exists())
 
         # Verify total counts are reduced by expected amounts
         self.assertEqual(Participant.objects.count(), initial_participant_count - 1)
@@ -198,7 +211,8 @@ class TestBotDeletion(TransactionTestCase):
         self.assertEqual(ChatMessage.objects.count(), initial_chat_message_count - 1)
         self.assertEqual(BotEvent.objects.count(), initial_bot_event_count - 1)
         self.assertEqual(BotDebugScreenshot.objects.count(), initial_screenshot_count - 1)
-
+        self.assertEqual(WebhookSubscription.objects.count(), initial_webhook_subscription_count - 1)
+        self.assertEqual(WebhookSubscription.objects.filter(project=self.project, bot__isnull=True).count(), 1)
         # Verify other bots' data is untouched
         self.assertTrue(Bot.objects.filter(id=self.bot1.id).exists())
         self.assertTrue(Bot.objects.filter(id=self.bot2.id).exists())
@@ -215,6 +229,7 @@ class TestBotDeletion(TransactionTestCase):
         # - ChatMessage (bot -> CASCADE)
         # - BotMediaRequest (bot -> CASCADE)
         # - BotChatMessageRequest (bot -> CASCADE)
+        # - WebhookSubscription (bot -> CASCADE)
 
         # PROTECT relationships (will prevent bot deletion):
         # - CreditTransaction (bot -> PROTECT)

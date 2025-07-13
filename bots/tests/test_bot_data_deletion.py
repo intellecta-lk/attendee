@@ -1,10 +1,11 @@
+import uuid
 from unittest.mock import PropertyMock, patch
 
 from django.core.files.base import ContentFile
 from django.test import TransactionTestCase
 from django.test.utils import override_settings
 
-from bots.models import Bot, BotDebugScreenshot, BotEvent, BotEventTypes, BotStates, ChatMessage, ChatMessageToOptions, Organization, Participant, ParticipantEvent, ParticipantEventTypes, Project, Recording, RecordingStates, Utterance
+from bots.models import Bot, BotDebugScreenshot, BotEvent, BotEventTypes, BotStates, ChatMessage, ChatMessageToOptions, Organization, Participant, ParticipantEvent, ParticipantEventTypes, Project, Recording, RecordingStates, Utterance, WebhookDeliveryAttempt, WebhookSubscription, WebhookTriggerTypes
 
 
 def mock_file_field_delete_sets_name_to_none(instance, save=True):
@@ -71,6 +72,22 @@ class TestBotDataDeletion(TransactionTestCase):
 
         self.participant2 = Participant.objects.create(bot=self.bot2, uuid="participant2", full_name="Test Participant 2")
 
+        # Create webhook subscriptions for each bot
+        self.webhook_subscription1 = WebhookSubscription.objects.create(project=self.project, bot=self.bot1, url="https://test.com/webhook1", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+        self.webhook_subscription2 = WebhookSubscription.objects.create(project=self.project, bot=self.bot2, url="https://test.com/webhook2", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+        self.project_webhook_subscription = WebhookSubscription.objects.create(project=self.project, url="https://test.com/project_webhook", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+
+        # Create webhook delivery attempts for each bot
+        self.webhook_delivery_attempt1 = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE, idempotency_key=uuid.uuid4(), webhook_subscription=self.webhook_subscription1, bot=self.bot1, payload={"test": "test"})
+        self.webhook_delivery_attempt2 = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE, idempotency_key=uuid.uuid4(), webhook_subscription=self.webhook_subscription2, bot=self.bot2, payload={"test": "test"})
+        self.sensitive_webhook_delivery_attempt1 = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.TRANSCRIPT_UPDATE, idempotency_key=uuid.uuid4(), webhook_subscription=self.webhook_subscription1, bot=self.bot1, payload={"test": "test"})
+        self.sensitive_webhook_delivery_attempt2 = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.TRANSCRIPT_UPDATE, idempotency_key=uuid.uuid4(), webhook_subscription=self.webhook_subscription2, bot=self.bot2, payload={"test": "test"})
+
+        self.project_webhook_delivery_attempt = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE, idempotency_key=uuid.uuid4(), webhook_subscription=self.project_webhook_subscription, bot=self.bot1, payload={"test": "test"})
+        self.project_webhook_delivery_attempt2 = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE, idempotency_key=uuid.uuid4(), webhook_subscription=self.project_webhook_subscription, bot=self.bot2, payload={"test": "test"})
+        self.project_sensitive_webhook_delivery_attempt = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.TRANSCRIPT_UPDATE, idempotency_key=uuid.uuid4(), webhook_subscription=self.project_webhook_subscription, bot=self.bot1, payload={"test": "test"})
+        self.project_sensitive_webhook_delivery_attempt2 = WebhookDeliveryAttempt.objects.create(webhook_trigger_type=WebhookTriggerTypes.TRANSCRIPT_UPDATE, idempotency_key=uuid.uuid4(), webhook_subscription=self.project_webhook_subscription, bot=self.bot2, payload={"test": "test"})
+
         # Create participant events for each participant
         self.participant_event1 = ParticipantEvent.objects.create(participant=self.participant1, event_type=ParticipantEventTypes.JOIN, timestamp_ms=1000)
         self.participant_event2 = ParticipantEvent.objects.create(participant=self.participant2, event_type=ParticipantEventTypes.JOIN, timestamp_ms=1000)
@@ -120,6 +137,9 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(Recording.objects.count(), 2)
         self.assertEqual(Utterance.objects.count(), 2)
         self.assertEqual(BotDebugScreenshot.objects.count(), 2)
+        self.assertEqual(WebhookSubscription.objects.count(), 3)
+        self.assertEqual(WebhookDeliveryAttempt.objects.count(), 8)
+        self.assertEqual(WebhookDeliveryAttempt.objects.filter(bot=self.bot1, webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE).count(), 2)
 
         # Delete data for bot1
         self.bot1.delete_data()
@@ -130,6 +150,14 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(ChatMessage.objects.filter(bot=self.bot1).count(), 0)
         self.assertEqual(BotDebugScreenshot.objects.filter(bot_event__bot=self.bot1).count(), 0)
         self.assertEqual(ParticipantEvent.objects.filter(participant__bot=self.bot1).count(), 0)
+        self.assertEqual(WebhookDeliveryAttempt.objects.filter(bot=self.bot1, webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE).count(), 3)
+        self.assertEqual(WebhookDeliveryAttempt.objects.filter(bot=self.bot1, webhook_trigger_type=WebhookTriggerTypes.TRANSCRIPT_UPDATE).count(), 0)
+
+        # Verify project level webhook subscription still exists
+        self.assertEqual(WebhookSubscription.objects.filter(project=self.project, bot__isnull=True).count(), 1)
+
+        # Verify bot1's webhook subscription still exists
+        self.assertEqual(WebhookSubscription.objects.filter(bot=self.bot1).count(), 1)
 
         # Verify bot2's data is still intact
         self.assertEqual(Participant.objects.filter(bot=self.bot2).count(), 1)
@@ -138,6 +166,9 @@ class TestBotDataDeletion(TransactionTestCase):
         self.assertEqual(ChatMessage.objects.filter(bot=self.bot2).count(), 1)
         self.assertEqual(BotDebugScreenshot.objects.filter(bot_event__bot=self.bot2).count(), 1)
         self.assertEqual(ParticipantEvent.objects.filter(participant__bot=self.bot2).count(), 2)
+        self.assertEqual(WebhookSubscription.objects.filter(bot=self.bot2).count(), 1)
+        self.assertEqual(WebhookDeliveryAttempt.objects.filter(bot=self.bot2, webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE).count(), 2)
+        self.assertEqual(WebhookDeliveryAttempt.objects.filter(bot=self.bot2, webhook_trigger_type=WebhookTriggerTypes.TRANSCRIPT_UPDATE).count(), 2)
 
         # Verify bot2's state is still ENDED
         self.bot2.refresh_from_db()

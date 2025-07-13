@@ -24,6 +24,24 @@ class BotEventInline(admin.TabularInline):
         return False
 
 
+class HasBotFilter(admin.SimpleListFilter):
+    title = "has bot"
+    parameter_name = "has_bot"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("yes", "Has Bot"),
+            ("no", "No Bot"),
+        )
+
+    def queryset(self, request, queryset):
+        if self.value() == "yes":
+            return queryset.filter(bot__isnull=False)
+        if self.value() == "no":
+            return queryset.filter(bot__isnull=True)
+        return queryset
+
+
 @admin.register(Bot)
 class BotAdmin(admin.ModelAdmin):
     actions = None
@@ -57,7 +75,7 @@ class BotAdmin(admin.ModelAdmin):
 
     # Optional: if you want to organize the fields in the detail view
     fieldsets = (
-        ("Basic Information", {"fields": ("object_id", "name", "project", "join_at")}),
+        ("Basic Information", {"fields": ("object_id", "name", "project", "join_at", "deduplication_key")}),
         ("Meeting Details", {"fields": ("meeting_url", "meeting_uuid")}),
         ("Status", {"fields": ("state", "view_logs_link")}),
         ("Settings", {"fields": ("settings",)}),
@@ -145,8 +163,8 @@ class WebhookDeliveryAttemptAdmin(admin.ModelAdmin):
 
 @admin.register(WebhookSubscription)
 class WebhookSubscriptionAdmin(admin.ModelAdmin):
-    list_display = ("url", "project", "is_active", "created_at")
-    list_filter = ("is_active", "project")
+    list_display = ("url", "project", "bot", "is_active", "created_at")
+    list_filter = ("is_active", "project", HasBotFilter)
     search_fields = ("url", "project__name")
     readonly_fields = ("object_id",)
 

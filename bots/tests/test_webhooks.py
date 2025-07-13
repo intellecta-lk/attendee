@@ -120,7 +120,7 @@ class WebhookSubscriptionTest(TransactionTestCase):
         webhook_data = {
             "url": "https://example.com/new-webhook",
             "triggers[]": [
-                WebhookTriggerTypes.BOT_STATE_CHANGE,
+                WebhookTriggerTypes.trigger_type_to_api_code(WebhookTriggerTypes.BOT_STATE_CHANGE),
             ],
         }
 
@@ -148,23 +148,32 @@ class WebhookSubscriptionTest(TransactionTestCase):
 
     def test_create_webhook_invalid_url(self):
         """Test webhook creation with invalid URL (non-HTTPS)"""
-        webhook_data = {"url": "http://example.com/insecure", "triggers[]": [WebhookTriggerTypes.BOT_STATE_CHANGE]}
+        # Clear the existing webhooks to avoid hitting limits
+        WebhookSubscription.objects.filter(project=self.project).delete()
+
+        webhook_data = {"url": "http://example.com/insecure", "triggers[]": [WebhookTriggerTypes.trigger_type_to_api_code(WebhookTriggerTypes.BOT_STATE_CHANGE)]}
 
         request = self._get_request(user=self.user, method="POST", post_data=webhook_data)
         response = self.create_webhook_view.post(request, self.project.object_id)
 
         # Check for error response
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.content.decode(), "URL must start with https://")
+        self.assertEqual(response.content.decode(), "webhook URL must start with https://")
 
         # Verify webhook wasn't created
         self.assertFalse(WebhookSubscription.objects.filter(url="http://example.com/insecure").exists())
 
     def test_create_webhook_duplicate_url(self):
         """Test webhook creation with already existing URL"""
+        # Clear existing webhooks first, then create one to test duplication
+        WebhookSubscription.objects.filter(project=self.project).delete()
+
+        # Create a webhook to test duplication against
+        WebhookSubscription.objects.create(project=self.project, url="https://example.com/webhook1", triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE])
+
         webhook_data = {
-            "url": "https://example.com/webhook1",  # This URL already exists from setUp
-            "triggers[]": [WebhookTriggerTypes.BOT_STATE_CHANGE],
+            "url": "https://example.com/webhook1",  # This URL now exists
+            "triggers[]": [WebhookTriggerTypes.trigger_type_to_api_code(WebhookTriggerTypes.BOT_STATE_CHANGE)],
         }
 
         request = self._get_request(user=self.user, method="POST", post_data=webhook_data)
@@ -181,7 +190,7 @@ class WebhookSubscriptionTest(TransactionTestCase):
         """Test webhook creation with invalid event type"""
         webhook_data = {
             "url": "https://example.com/new-webhook",
-            "triggers[]": [9999],  # Invalid event type
+            "triggers[]": [9999],  # Invalid event type integer
         }
 
         request = self._get_request(user=self.user, method="POST", post_data=webhook_data)
@@ -189,7 +198,7 @@ class WebhookSubscriptionTest(TransactionTestCase):
 
         # Check for error response
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.content.decode(), "Invalid event type: 9999")
+        self.assertEqual(response.content.decode(), "Invalid webhook trigger type: 9999")
 
     def test_delete_webhook(self):
         """Test webhook deletion"""
@@ -228,7 +237,7 @@ class WebhookSubscriptionTest(TransactionTestCase):
         webhook_data = {
             "url": "https://example.com/new-webhook",
             "triggers[]": [
-                WebhookTriggerTypes.BOT_STATE_CHANGE,
+                WebhookTriggerTypes.trigger_type_to_api_code(WebhookTriggerTypes.BOT_STATE_CHANGE),
             ],
         }
         request = self._get_request(user=self.user, method="POST", post_data=webhook_data)
@@ -268,9 +277,7 @@ class WebhookDeliveryTest(TransactionTestCase):
         self.webhook_subscription = WebhookSubscription.objects.create(
             project=self.project,
             url="https://example.com/webhook",
-            triggers=[
-                WebhookTriggerTypes.BOT_STATE_CHANGE,
-            ],
+            triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE, WebhookTriggerTypes.TRANSCRIPT_UPDATE],
         )
         # Create webhook secret
         self.webhook_secret = WebhookSecret.objects.create(project=self.project)
@@ -370,3 +377,76 @@ class WebhookDeliveryTest(TransactionTestCase):
         self.assertIsNone(attempt.response_body_list[0]["status_code"])
         self.assertIsNone(attempt.succeeded_at)
         self.assertEqual(attempt.attempt_count, 0)
+
+    @patch("bots.tasks.deliver_webhook_task.requests.post")
+    def test_bot_webhook_prioritization(self, mock_post):
+        """Test that bot-level webhooks are prioritized over project-level webhooks"""
+        from bots.webhook_utils import trigger_webhook
+
+        # Mock successful webhook delivery
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.text = "OK"
+
+        # Create project-level webhook subscription (already exists from setUp)
+        project_webhook = self.webhook_subscription
+
+        # Create bot-level webhook subscription for the same trigger
+        bot_webhook = WebhookSubscription.objects.create(
+            project=self.project,
+            bot=self.bot,
+            url="https://example.com/bot-webhook",
+            triggers=[WebhookTriggerTypes.BOT_STATE_CHANGE],
+        )
+
+        # Clear any existing delivery attempts
+        WebhookDeliveryAttempt.objects.all().delete()
+
+        # Trigger webhook - should only use bot-level webhook
+        test_payload = {"test": "bot_priority_data"}
+        num_attempts = trigger_webhook(WebhookTriggerTypes.BOT_STATE_CHANGE, self.bot, test_payload)
+
+        # Should only create 1 delivery attempt (for bot-level webhook only)
+        self.assertEqual(num_attempts, 1)
+        self.assertEqual(WebhookDeliveryAttempt.objects.count(), 1)
+
+        # Get the delivery attempt and call the delivery task
+        delivery_attempt = WebhookDeliveryAttempt.objects.first()
+        deliver_webhook.apply(args=[delivery_attempt.id])
+
+        # Refresh and verify the delivery attempt was created for the bot-level webhook, not project-level
+        delivery_attempt.refresh_from_db()
+        self.assertEqual(delivery_attempt.webhook_subscription, bot_webhook)
+        self.assertNotEqual(delivery_attempt.webhook_subscription, project_webhook)
+        self.assertEqual(delivery_attempt.bot, self.bot)
+        self.assertEqual(delivery_attempt.payload, test_payload)
+        self.assertEqual(delivery_attempt.status, WebhookDeliveryAttemptStatus.SUCCESS)
+
+        # Test that triggering a webhook for a transcript update does not go through at all, since there is no bot-level webhook for it
+        num_attempts = trigger_webhook(WebhookTriggerTypes.TRANSCRIPT_UPDATE, self.bot, test_payload)
+        self.assertEqual(num_attempts, 0)
+
+        # Test fallback behavior - delete bot-level webhook and verify project-level webhook is used
+        bot_webhook.delete()
+        WebhookDeliveryAttempt.objects.all().delete()
+
+        # Trigger webhook again - should now use project-level webhook
+        num_attempts = trigger_webhook(WebhookTriggerTypes.BOT_STATE_CHANGE, self.bot, test_payload)
+
+        # Should create 1 delivery attempt for project-level webhook
+        self.assertEqual(num_attempts, 1)
+        self.assertEqual(WebhookDeliveryAttempt.objects.count(), 1)
+
+        # Get the delivery attempt and call the delivery task
+        delivery_attempt = WebhookDeliveryAttempt.objects.first()
+        deliver_webhook.apply(args=[delivery_attempt.id])
+
+        # Refresh and verify the delivery attempt was created for the project-level webhook
+        delivery_attempt.refresh_from_db()
+        self.assertEqual(delivery_attempt.webhook_subscription, project_webhook)
+        self.assertEqual(delivery_attempt.bot, self.bot)
+        self.assertEqual(delivery_attempt.payload, test_payload)
+        self.assertEqual(delivery_attempt.status, WebhookDeliveryAttemptStatus.SUCCESS)
+
+        # Test that triggering a webhook for a transcript update does go through, since it uses the project-level webhook
+        num_attempts = trigger_webhook(WebhookTriggerTypes.TRANSCRIPT_UPDATE, self.bot, test_payload)
+        self.assertEqual(num_attempts, 1)

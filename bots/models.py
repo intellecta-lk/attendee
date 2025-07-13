@@ -122,6 +122,10 @@ class BotStates(models.IntegerChoices):
         }
         return mapping.get(value)
 
+    @classmethod
+    def post_meeting_states(cls):
+        return [cls.FATAL_ERROR, cls.ENDED, cls.DATA_DELETED]
+
 
 class RecordingFormats(models.TextChoices):
     MP4 = "mp4"
@@ -158,6 +162,7 @@ class Bot(models.Model):
     last_heartbeat_timestamp = models.IntegerField(null=True, blank=True)
 
     join_at = models.DateTimeField(null=True, blank=True, help_text="The time the bot should join the meeting")
+    deduplication_key = models.CharField(max_length=1024, null=True, blank=True, help_text="Optional key for deduplicating bots")
 
     def delete_data(self):
         # Check if bot is in a state where the data deleted event can be created
@@ -182,6 +187,10 @@ class Bot(models.Model):
 
             # Delete all chat messages
             self.chat_messages.all().delete()
+
+            # Delete all webhook delivery attempts that have a trigger other than BOT_STATE_CHANGE, since these contain sensitive data
+            webhook_delivery_attempts_with_sensitive_data = self.webhook_delivery_attempts.exclude(webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE)
+            webhook_delivery_attempts_with_sensitive_data.delete()
 
             BotEventManager.create_event(bot=self, event_type=BotEventTypes.DATA_DELETED)
 
@@ -328,6 +337,9 @@ class Bot(models.Model):
     def teams_closed_captions_language(self):
         return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("teams_language", None)
 
+    def meeting_closed_captions_merge_consecutive_captions(self):
+        return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("merge_consecutive_captions", False)
+
     def teams_use_bot_login(self):
         return self.settings.get("teams_settings", {}).get("use_login", False)
 
@@ -343,6 +355,23 @@ class Bot(models.Model):
             return None
 
         return f"{destination_url}/{stream_key}"
+
+    def websocket_audio_url(self):
+        """Websocket URL is used to send/receive audio chunks to/from the bot"""
+        websocket_settings = self.settings.get("websocket_settings") or {}
+        websocket_audio_settings = websocket_settings.get("audio") or {}
+        return websocket_audio_settings.get("url")
+
+    def websocket_audio_sample_rate(self):
+        websocket_settings = self.settings.get("websocket_settings") or {}
+        websocket_audio_settings = websocket_settings.get("audio") or {}
+        return websocket_audio_settings.get("sample_rate", 16000)
+
+    def zoom_tokens_callback_url(self):
+        callback_settings = self.settings.get("callback_settings", {})
+        if callback_settings is None:
+            callback_settings = {}
+        return callback_settings.get("zoom_tokens_url", None)
 
     def recording_format(self):
         recording_settings = self.settings.get("recording_settings", {})
@@ -372,6 +401,10 @@ class Bot(models.Model):
         if recording_settings is None:
             recording_settings = {}
         return recording_settings.get("view", RecordingViews.SPEAKER_VIEW)
+
+    def save_resource_snapshots(self):
+        save_resource_snapshots_env_var_value = os.getenv("SAVE_BOT_RESOURCE_SNAPSHOTS", "false")
+        return str(save_resource_snapshots_env_var_value).lower() == "true"
 
     def create_debug_recording(self):
         from bots.utils import meeting_type_from_url
@@ -410,6 +443,11 @@ class Bot(models.Model):
         # The partial index will exclude bots without a join_at which should speed up the query and reduce the space used by the index.
         indexes = [
             models.Index(fields=["join_at"], name="bot_join_at_idx", condition=models.Q(join_at__isnull=False)),
+        ]
+
+        # Within a project, we don't want to allow bots that aren't in apost-meeting state with the same deduplication key.
+        constraints = [
+            models.UniqueConstraint(fields=["project", "deduplication_key"], name="unique_bot_deduplication_key", condition=~models.Q(state__in=BotStates.post_meeting_states())),
         ]
 
 
@@ -539,6 +577,20 @@ class BotEventTypes(models.IntegerChoices):
         return mapping.get(value)
 
 
+class RealtimeTriggerTypes(models.IntegerChoices):
+    MIXED_AUDIO_CHUNK = 101, "Mixed audio chunk"
+    BOT_OUTPUT_AUDIO_CHUNK = 102, "Bot output audio chunk"
+
+    @classmethod
+    def type_to_api_code(cls, value):
+        """Returns the API code for a given type value"""
+        mapping = {
+            cls.MIXED_AUDIO_CHUNK: "realtime_audio.mixed",
+            cls.BOT_OUTPUT_AUDIO_CHUNK: "realtime_audio.bot_output",
+        }
+        return mapping.get(value)
+
+
 class BotEventSubTypes(models.IntegerChoices):
     COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST = (
         1,
@@ -578,9 +630,10 @@ class BotEventSubTypes(models.IntegerChoices):
         "Bot could not join meeting - Waiting room timeout exceeded",
     )
     LEAVE_REQUESTED_AUTO_LEAVE_MAX_UPTIME_EXCEEDED = 17, "Leave requested - Auto leave max uptime exceeded"
-    COULD_NOT_JOIN_MEETING_LOGIN_REQUIRED = 18, "Bot could not join meeting - Login required"
+    COULD_NOT_JOIN_MEETING_LOGIN_REQUIRED = 18, "Bot could not join meeting - Login required. Use signed in bots: https://docs.attendee.dev/guides/signed-in-bots to resolve."
     COULD_NOT_JOIN_MEETING_BOT_LOGIN_ATTEMPT_FAILED = 19, "Bot could not join meeting - Bot login attempt failed"
     FATAL_ERROR_OUT_OF_CREDITS = 20, "Fatal error - Out of credits"
+    COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING = 21, "Bot could not join meeting - Unable to connect to meeting. This usually means the meeting password in the URL is incorrect."
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -606,6 +659,7 @@ class BotEventSubTypes(models.IntegerChoices):
             cls.COULD_NOT_JOIN_MEETING_LOGIN_REQUIRED: "login_required",
             cls.COULD_NOT_JOIN_MEETING_BOT_LOGIN_ATTEMPT_FAILED: "bot_login_attempt_failed",
             cls.FATAL_ERROR_OUT_OF_CREDITS: "out_of_credits",
+            cls.COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING: "unable_to_connect_to_meeting",
         }
         return mapping.get(value)
 
@@ -649,7 +703,7 @@ class BotEvent(models.Model):
                     (Q(event_type=BotEventTypes.FATAL_ERROR) & (Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_PROCESS_TERMINATED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_OUT_OF_CREDITS) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_RTMP_CONNECTION_FAILED) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_UI_ELEMENT_NOT_FOUND) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_HEARTBEAT_TIMEOUT) | Q(event_sub_type=BotEventSubTypes.FATAL_ERROR_BOT_NOT_LAUNCHED)))
                     |
                     # For COULD_NOT_JOIN event type, must have one of the valid event subtypes
-                    (Q(event_type=BotEventTypes.COULD_NOT_JOIN) & (Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_WAITING_ROOM_TIMEOUT_EXCEEDED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_LOGIN_REQUIRED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_BOT_LOGIN_ATTEMPT_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_REQUEST_TO_JOIN_DENIED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND)))
+                    (Q(event_type=BotEventTypes.COULD_NOT_JOIN) & (Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_NOT_STARTED_WAITING_FOR_HOST) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_WAITING_ROOM_TIMEOUT_EXCEEDED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_AUTHORIZATION_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_LOGIN_REQUIRED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_BOT_LOGIN_ATTEMPT_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_MEETING_STATUS_FAILED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_REQUEST_TO_JOIN_DENIED) | Q(event_sub_type=BotEventSubTypes.COULD_NOT_JOIN_MEETING_MEETING_NOT_FOUND)))
                     |
                     # For LEAVE_REQUESTED event type, must have one of the valid event subtypes or be null (for backwards compatibility, this will eventually be removed)
                     (Q(event_type=BotEventTypes.LEAVE_REQUESTED) & (Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_USER_REQUESTED) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_SILENCE) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_MAX_UPTIME_EXCEEDED) | Q(event_sub_type__isnull=True)))
@@ -663,8 +717,6 @@ class BotEvent(models.Model):
 
 
 class BotEventManager:
-    POST_MEETING_STATES = [BotStates.FATAL_ERROR, BotStates.ENDED, BotStates.DATA_DELETED]
-
     # Define valid state transitions for each event type
     VALID_TRANSITIONS = {
         BotEventTypes.JOIN_REQUESTED: {
@@ -796,7 +848,7 @@ class BotEventManager:
 
     @classmethod
     def is_post_meeting_state(cls, state: int):
-        return state in cls.POST_MEETING_STATES
+        return state in BotStates.post_meeting_states()
 
     @classmethod
     def bot_event_type_should_incur_charges(cls, event_type: int):
@@ -808,7 +860,7 @@ class BotEventManager:
     def get_post_meeting_states_q_filter(cls):
         """Returns a Q object to filter for post meeting states"""
         q_filter = models.Q()
-        for state in cls.POST_MEETING_STATES:
+        for state in BotStates.post_meeting_states():
             q_filter |= models.Q(state=state)
         return q_filter
 
@@ -1715,14 +1767,25 @@ class WebhookTriggerTypes(models.IntegerChoices):
     # add other event types here
 
     @classmethod
-    def trigger_type_to_api_code(cls, value):
-        mapping = {
+    def _get_mapping(cls):
+        """Get the trigger type to API code mapping"""
+        return {
             cls.BOT_STATE_CHANGE: "bot.state_change",
             cls.TRANSCRIPT_UPDATE: "transcript.update",
             cls.CHAT_MESSAGES_UPDATE: "chat_messages.update",
             cls.PARTICIPANT_EVENTS_JOIN_LEAVE: "participant_events.join_leave",
         }
-        return mapping.get(value)
+
+    @classmethod
+    def trigger_type_to_api_code(cls, value):
+        return cls._get_mapping().get(value)
+
+    @classmethod
+    def api_code_to_trigger_type(cls, api_code):
+        """Convert API code string to trigger type integer."""
+        mapping = cls._get_mapping()
+        api_code_to_trigger = {api_code: trigger_type.value for trigger_type, api_code in mapping.items()}
+        return api_code_to_trigger.get(api_code)
 
 
 class WebhookSubscription(models.Model):
@@ -1730,6 +1793,7 @@ class WebhookSubscription(models.Model):
         return [WebhookTriggerTypes.BOT_STATE_CHANGE]
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="webhook_subscriptions")
+    bot = models.ForeignKey(Bot, on_delete=models.CASCADE, related_name="bot_webhook_subscriptions", null=True, blank=True)
 
     OBJECT_ID_PREFIX = "webhook_"
     object_id = models.CharField(max_length=32, unique=True, editable=False)
@@ -1802,3 +1866,12 @@ class ChatMessage(models.Model):
             random_string = "".join(random.choices(string.ascii_letters + string.digits, k=16))
             self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
         super().save(*args, **kwargs)
+
+
+class BotResourceSnapshot(models.Model):
+    bot = models.ForeignKey(Bot, on_delete=models.CASCADE, related_name="resource_snapshots")
+    data = models.JSONField(null=False, default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Resource snapshot for {self.bot.object_id} at {self.created_at}"
