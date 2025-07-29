@@ -64,7 +64,7 @@ class TeamsUIMethods:
         camera_button = self.locate_element(step="turn_off_camera_button", condition=EC.presence_of_element_located((By.CSS_SELECTOR, '[data-tid="toggle-video"]')), wait_time_seconds=6)
         logger.info("Clicking the camera button...")
         # if the aria-checked attribute of the element is true, then click the element
-        if camera_button.get_attribute("aria-checked") == "true":
+        if camera_button.get_attribute("aria-checked") == "true" or camera_button.get_attribute("checked") == "true":
             self.click_element(camera_button, "turn_off_camera_button")
         else:
             logger.info("Camera button is already off, not clicking it")
@@ -86,6 +86,8 @@ class TeamsUIMethods:
                 name_input.send_keys(self.display_name)
                 return
             except TimeoutException as e:
+                self.look_for_microsoft_login_form_element("name_input")
+
                 last_check_timed_out = attempt_index == num_attempts - 1
                 if last_check_timed_out:
                     logger.info("Could not find name input. Timed out. Raising UiCouldNotLocateElementException")
@@ -165,6 +167,13 @@ class TeamsUIMethods:
         if sign_in_required_element:
             logger.info("Sign in required. Raising UiLoginRequiredException")
             raise UiLoginRequiredException("Sign in required", step)
+
+    def look_for_microsoft_login_form_element(self, step):
+        # Check for Microsoft login form (email input)
+        microsoft_login_element = self.find_element_by_selector(By.CSS_SELECTOR, 'input[name="loginfmt"][type="email"]')
+        if microsoft_login_element:
+            logger.info("Microsoft login form detected. Raising UiLoginRequiredException")
+            raise UiLoginRequiredException("Microsoft login form detected", step)
 
     def look_for_we_could_not_connect_you_element(self, step):
         we_could_not_connect_you_element = self.find_element_by_selector(By.XPATH, '//*[contains(text(), "we couldn\'t connect you")]')
