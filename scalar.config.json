@@ -30,7 +30,19 @@
           "type": "page"
         },
         {
+          "path": "docs/voice_agents.md",
+          "type": "page"
+        },
+        {
           "path": "docs/realtime_audio.md",
+          "type": "page"
+        },
+        {
+          "path": "docs/calendar_integration.md",
+          "type": "page"
+        },
+        {
+          "path": "docs/zoom_app_review.md",
           "type": "page"
         },
         {

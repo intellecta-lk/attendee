@@ -3,18 +3,17 @@ ZoomMtg.prepareWebSDK()
 
 var zoomInitialData = window.zoomInitialData;
 
-var authEndpoint = ''
+var authEndpoint = '';
 var sdkKey = zoomInitialData.sdkKey;
 var meetingNumber = zoomInitialData.meetingNumber;
 var passWord = zoomInitialData.meetingPassword;
-var role = 0
+var role = 0;
 var userName = initialData.botName;
-var userEmail = ''
-var registrantToken = ''
-var zakToken = ''
-var leaveUrl = 'https://zoom.us'
-var registrantToken = ''
-var zakToken = ''
+var userEmail = '';
+var registrantToken = '';
+var recordingToken = zoomInitialData.joinToken || zoomInitialData.appPrivilegeToken;
+var zakToken = zoomInitialData.zakToken;
+var leaveUrl = 'https://zoom.us';
 var userEnteredMeeting = false;
 
 class TranscriptMessageFinalizationManager {
@@ -26,7 +25,7 @@ class TranscriptMessageFinalizationManager {
         const messageConverted = {
             deviceId: message.userId,
             captionId: message.msgId,
-            text: message.text,
+            text: message.text ? message.text.replace(/\x00/g, '') : '',
             isFinal: !!message.done
         };
         
@@ -105,6 +104,7 @@ function startMeeting(signature) {
             userName: userName,
             userEmail: userEmail,
             tk: registrantToken,
+            recordingToken: recordingToken,
             zak: zakToken,
             success: (success) => {
                 console.log('join success');
@@ -184,6 +184,15 @@ function startMeeting(signature) {
 
     ZoomMtg.inMeetingServiceListener('onReceiveTranscriptionMsg', function (item) {
         console.log('onReceiveTranscriptionMsg', item);
+
+        if (!item.msgId) {
+            window.ws.sendJson({
+                type: 'TranscriptMessageError',
+                error: 'No msgId',
+                item: item
+            });
+            return;
+        }
 
         transcriptMessageFinalizationManager.addMessage(item);
     });
@@ -286,16 +295,22 @@ function startMeeting(signature) {
         {
             ZoomMtg.mediaCapture({record: "start", success: (success) => {
                 console.log('mediaCapture success', success);
+                window.ws.sendJson({
+                    type: 'RecordingPermissionChange',
+                    change: 'granted'
+                });
             }, error: (error) => {
                 console.log('mediaCapture error', error);
             }});
+        }
 
+        if (permissionChange.allow === false)
+        {
             window.ws.sendJson({
                 type: 'RecordingPermissionChange',
-                change: 'granted'
+                change: 'denied'
             });
-        }
-        
+        }        
     });
 }
 
@@ -330,12 +345,26 @@ function sendChatMessage(text) {
 window.sendChatMessage = sendChatMessage;
 
 function askForMediaCapturePermission() {
-    // Ask for media capture permission
-    ZoomMtg.mediaCapturePermission({operate: "request", success: (success) => {
-        console.log('mediaCapturePermission success', success);
-    }, error: (error) => {
-        console.log('mediaCapturePermission error', error);
-    }});
+    // We need to wait a second to ask for permission because of this issue:
+    // https://devforum.zoom.us/t/error-in-mediacapturepermission-api-typeerror-cannot-read-properties-of-undefined-reading-caps/96683/6
+    setTimeout(() => {
+        // Attempt to start capture
+        ZoomMtg.mediaCapture({record: "start", success: (success) => {
+            // If it succeeds, great, we're done.
+            window.ws.sendJson({
+                type: 'RecordingPermissionChange',
+                change: 'granted'
+            });
+
+        }, error: (error) => {
+            // If it fails, we need to ask for permission
+            ZoomMtg.mediaCapturePermission({operate: "request", success: (success) => {
+                console.log('mediaCapturePermission success', success);
+            }, error: (error) => {
+                console.log('mediaCapturePermission error', error);
+            }});
+        }});
+    }, 1000);
 }
 
 window.askForMediaCapturePermission = askForMediaCapturePermission;

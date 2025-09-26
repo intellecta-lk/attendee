@@ -97,7 +97,7 @@ class GoogleMeetUIMethods:
     def look_for_denied_your_request_element(self, step):
         denied_your_request_element = self.find_element_by_selector(
             By.XPATH,
-            '//*[contains(text(), "Someone in the call denied your request to join") or contains(text(), "No one responded to your request to join the call")]',
+            '//*[contains(text(), "Someone in the call denied your request to join") or contains(text(), "No one responded to your request to join the call") or contains(text(), "You left the meeting")]',
         )
         if denied_your_request_element:
             logger.info("Someone in the call denied our request to join. Raising UiRequestToJoinDeniedException")
@@ -239,6 +239,8 @@ class GoogleMeetUIMethods:
             return "sidebar"
         elif self.recording_view == RecordingViews.GALLERY_VIEW:
             return "tiled"
+        elif self.recording_view == RecordingViews.SPEAKER_VIEW_NO_SIDEBAR:
+            return "spotlight"
         else:
             return "sidebar"
 

@@ -21,6 +21,14 @@ class BotAdapter:
         LOGIN_REQUIRED = "Login required"
         LOGIN_ATTEMPT_FAILED = "Login attempt failed"
         COULD_NOT_CONNECT_TO_MEETING = "Could not connect to meeting"
+        JOINING_BREAKOUT_ROOM = "Joining breakout room"
+        LEAVING_BREAKOUT_ROOM = "Leaving breakout room"
+        BOT_RECORDING_PERMISSION_DENIED = "Bot recording permission denied"
+
+    class BOT_RECORDING_PERMISSION_DENIED_REASON:
+        HOST_DENIED_PERMISSION = "HOST_DENIED_PERMISSION"
+        REQUEST_TIMED_OUT = "REQUEST_TIMED_OUT"
+        HOST_CLIENT_CANNOT_GRANT_PERMISSION = "HOST_CLIENT_CANNOT_GRANT_PERMISSION"
 
     class LEAVE_REASON:
         AUTO_LEAVE_SILENCE = "AUTO_LEAVE_SILENCE"

@@ -17,7 +17,7 @@ from django.db.utils import IntegrityError
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 
-from accounts.models import Organization
+from accounts.models import Organization, User, UserRole
 from bots.webhook_utils import trigger_webhook
 
 # Create your models here.
@@ -33,6 +33,20 @@ class Project(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    @classmethod
+    def accessible_to(cls, user):
+        if not user.is_active:
+            return cls.objects.none()
+        if user.role == UserRole.ADMIN:
+            return cls.objects.filter(organization=user.organization)
+        return cls.objects.filter(organization=user.organization).filter(project_accesses__user=user)
+
+    def users_with_access(self):
+        return self.organization.users.filter(is_active=True).filter(Q(project_accesses__project=self) | Q(role=UserRole.ADMIN))
+
+    def concurrent_bots_limit(self):
+        return int(os.getenv("CONCURRENT_BOTS_LIMIT", 2500))
+
     def save(self, *args, **kwargs):
         if not self.object_id:
             # Generate a random 16-character string
@@ -42,6 +56,118 @@ class Project(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class CalendarPlatform(models.TextChoices):
+    GOOGLE = "google"
+    MICROSOFT = "microsoft"
+
+
+class CalendarStates(models.IntegerChoices):
+    CONNECTED = 1
+    DISCONNECTED = 2
+
+
+class Calendar(models.Model):
+    OBJECT_ID_PREFIX = "cal_"
+
+    object_id = models.CharField(max_length=32, unique=True, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name="calendars")
+    platform = models.CharField(max_length=255, choices=CalendarPlatform.choices)
+    state = models.IntegerField(choices=CalendarStates.choices, default=CalendarStates.CONNECTED)
+    connection_failure_data = models.JSONField(null=True, default=None)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    version = IntegerVersionField()
+
+    metadata = models.JSONField(null=True, blank=True)
+    deduplication_key = models.CharField(max_length=1024, null=True, blank=True, help_text="Optional key for deduplicating calendars")
+
+    client_id = models.CharField(max_length=255)
+    platform_uuid = models.CharField(max_length=1024, null=True, blank=True)
+
+    last_attempted_sync_at = models.DateTimeField(null=True, blank=True)
+    last_successful_sync_at = models.DateTimeField(null=True, blank=True)
+    last_successful_sync_time_window_start = models.DateTimeField(null=True, blank=True)
+    last_successful_sync_time_window_end = models.DateTimeField(null=True, blank=True)
+    last_successful_sync_started_at = models.DateTimeField(null=True, blank=True)
+    sync_task_enqueued_at = models.DateTimeField(null=True, blank=True)
+    sync_task_requested_at = models.DateTimeField(null=True, blank=True)
+
+    _encrypted_data = models.BinaryField(
+        null=True,
+        editable=False,  # Prevents editing through admin/forms
+    )
+
+    def set_credentials(self, credentials_dict):
+        """Encrypt and save credentials"""
+        f = Fernet(settings.CREDENTIALS_ENCRYPTION_KEY)
+        json_data = json.dumps(credentials_dict)
+        self._encrypted_data = f.encrypt(json_data.encode())
+        self.save()
+
+    def get_credentials(self):
+        """Decrypt and return credentials"""
+        if not self._encrypted_data:
+            return None
+        f = Fernet(settings.CREDENTIALS_ENCRYPTION_KEY)
+        decrypted_data = f.decrypt(bytes(self._encrypted_data))
+        return json.loads(decrypted_data.decode())
+
+    def save(self, *args, **kwargs):
+        if not self.object_id:
+            # Generate a random 16-character string
+            random_string = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+            self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
+        super().save(*args, **kwargs)
+
+    class Meta:
+        # Within a project, we don't want to allow calendars in the same project with the same deduplication key
+        constraints = [
+            models.UniqueConstraint(fields=["project", "deduplication_key"], name="unique_calendar_deduplication_key"),
+        ]
+
+
+class CalendarEvent(models.Model):
+    OBJECT_ID_PREFIX = "evt_"
+
+    object_id = models.CharField(max_length=255, unique=True, editable=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    calendar = models.ForeignKey(Calendar, on_delete=models.CASCADE, related_name="events")
+
+    platform_uuid = models.CharField(max_length=1024)
+
+    meeting_url = models.CharField(max_length=511, null=True, blank=True)
+
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField()
+    is_deleted = models.BooleanField(default=False)
+    attendees = models.JSONField(null=True, blank=True)
+    ical_uid = models.CharField(max_length=1024, null=True, blank=True)
+    name = models.CharField(max_length=1024, null=True, blank=True)
+
+    raw = models.JSONField()
+
+    def save(self, *args, **kwargs):
+        if not self.object_id:
+            # Generate a random 16-character string
+            random_string = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+            self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
+        super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["calendar", "platform_uuid"], name="unique_calendar_event_platform_uuid"),
+        ]
+
+
+class ProjectAccess(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="project_accesses")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="project_accesses")
 
 
 class ApiKey(models.Model):
@@ -101,11 +227,14 @@ class BotStates(models.IntegerChoices):
     SCHEDULED = 11, "Scheduled"
     STAGED = 12, "Staged"
     JOINED_RECORDING_PAUSED = 13, "Joined - Recording Paused"
+    JOINING_BREAKOUT_ROOM = 14, "Joining Breakout Room"
+    LEAVING_BREAKOUT_ROOM = 15, "Leaving Breakout Room"
+    JOINED_RECORDING_PERMISSION_DENIED = 16, "Joined - Recording Permission Denied"
 
     @classmethod
-    def state_to_api_code(cls, value):
-        """Returns the API code for a given state value"""
-        mapping = {
+    def _get_state_to_api_code_mapping(cls):
+        """Get the trigger type to API code mapping"""
+        return {
             cls.READY: "ready",
             cls.JOINING: "joining",
             cls.JOINED_NOT_RECORDING: "joined_not_recording",
@@ -119,23 +248,160 @@ class BotStates(models.IntegerChoices):
             cls.SCHEDULED: "scheduled",
             cls.STAGED: "staged",
             cls.JOINED_RECORDING_PAUSED: "joined_recording_paused",
+            cls.JOINING_BREAKOUT_ROOM: "joining_breakout_room",
+            cls.LEAVING_BREAKOUT_ROOM: "leaving_breakout_room",
+            cls.JOINED_RECORDING_PERMISSION_DENIED: "joined_recording_permission_denied",
         }
-        return mapping.get(value)
+
+    @classmethod
+    def state_to_api_code(cls, value):
+        """Returns the API code for a given state value"""
+        return cls._get_state_to_api_code_mapping().get(value)
+
+    @classmethod
+    def api_code_to_state(cls, api_code):
+        """Returns the state value for a given API code"""
+        reverse_mapping = {v: k for k, v in cls._get_state_to_api_code_mapping().items()}
+        return reverse_mapping.get(api_code)
 
     @classmethod
     def post_meeting_states(cls):
         return [cls.FATAL_ERROR, cls.ENDED, cls.DATA_DELETED]
+
+    @classmethod
+    def pre_meeting_states(cls):
+        return [cls.READY, cls.SCHEDULED, cls.STAGED]
 
 
 class RecordingFormats(models.TextChoices):
     MP4 = "mp4"
     WEBM = "webm"
     MP3 = "mp3"
+    NONE = "none"
 
 
 class RecordingViews(models.TextChoices):
     SPEAKER_VIEW = "speaker_view"
     GALLERY_VIEW = "gallery_view"
+    SPEAKER_VIEW_NO_SIDEBAR = "speaker_view_no_sidebar"
+
+
+class TranscriptionSettings:
+    def __init__(self, settings: dict):
+        self._settings = settings or {}
+
+    def openai_transcription_prompt(self):
+        return self._settings.get("openai", {}).get("prompt", None)
+
+    def openai_transcription_model(self):
+        default_model = os.getenv("OPENAI_MODEL_NAME", "gpt-4o-transcribe")
+        return self._settings.get("openai", {}).get("model", default_model)
+
+    def openai_transcription_language(self):
+        return self._settings.get("openai", {}).get("language", None)
+
+    def gladia_code_switching_languages(self):
+        return self._settings.get("gladia", {}).get("code_switching_languages", None)
+
+    def gladia_enable_code_switching(self):
+        return self._settings.get("gladia", {}).get("enable_code_switching", False)
+
+    def assembly_ai_language_code(self):
+        return self._settings.get("assembly_ai", {}).get("language_code", None)
+
+    def assembly_ai_language_detection(self):
+        return self._settings.get("assembly_ai", {}).get("language_detection", False)
+
+    def assemblyai_keyterms_prompt(self):
+        return self._settings.get("assembly_ai", {}).get("keyterms_prompt", None)
+
+    def assemblyai_speech_model(self):
+        return self._settings.get("assembly_ai", {}).get("speech_model", None)
+
+    def assemblyai_speaker_labels(self):
+        return self._settings.get("assembly_ai", {}).get("speaker_labels", False)
+
+    def assemblyai_base_url(self):
+        if os.getenv("ASSEMBLYAI_BASE_URL"):
+            return os.getenv("ASSEMBLYAI_BASE_URL")
+        use_eu_server = self._settings.get("assembly_ai", {}).get("use_eu_server", False)
+        if use_eu_server:
+            return "https://api.eu.assemblyai.com/v2"
+        return "https://api.assemblyai.com/v2"
+
+    def assemblyai_language_detection_options(self):
+        language_detection_options = self._settings.get("assembly_ai", {}).get("language_detection_options", None)
+        if not language_detection_options:
+            return None
+        return {
+            "expected_languages": language_detection_options.get("expected_languages", ["all"]),
+            "fallback_language": language_detection_options.get("fallback_language", "auto"),
+        }
+
+    def sarvam_language_code(self):
+        return self._settings.get("sarvam", {}).get("language_code", None)
+
+    def sarvam_model(self):
+        return self._settings.get("sarvam", {}).get("model", None)
+
+    def elevenlabs_model_id(self):
+        return self._settings.get("elevenlabs", {}).get("model_id", "scribe_v1")
+
+    def elevenlabs_language_code(self):
+        return self._settings.get("elevenlabs", {}).get("language_code", None)
+
+    def elevenlabs_tag_audio_events(self):
+        return self._settings.get("elevenlabs", {}).get("tag_audio_events", None)
+
+    def deepgram_language(self):
+        return self._settings.get("deepgram", {}).get("language", None)
+
+    def deepgram_detect_language(self):
+        return self._settings.get("deepgram", {}).get("detect_language", None)
+
+    def deepgram_callback(self):
+        return self._settings.get("deepgram", {}).get("callback", None)
+
+    def deepgram_keyterms(self):
+        return self._settings.get("deepgram", {}).get("keyterms", None)
+
+    def deepgram_keywords(self):
+        return self._settings.get("deepgram", {}).get("keywords", None)
+
+    def deepgram_use_streaming(self):
+        return self.deepgram_callback() is not None
+
+    def deepgram_model(self):
+        model_from_settings = self._settings.get("deepgram", {}).get("model", None)
+        if model_from_settings:
+            return model_from_settings
+
+        # nova-3 does not have multilingual support yet, so we need to use nova-2 if we're transcribing with a non-default language
+        if (self.deepgram_language() != "en" and self.deepgram_language()) or self.deepgram_detect_language():
+            deepgram_model = "nova-2"
+        else:
+            deepgram_model = "nova-3"
+
+        # Special case: we can use nova-3 for language=multi
+        if self.deepgram_language() == "multi":
+            deepgram_model = "nova-3"
+
+        return deepgram_model
+
+    def deepgram_redaction_settings(self):
+        return self._settings.get("deepgram", {}).get("redact", [])
+
+    def google_meet_closed_captions_language(self):
+        return self._settings.get("meeting_closed_captions", {}).get("google_meet_language", None)
+
+    def teams_closed_captions_language(self):
+        return self._settings.get("meeting_closed_captions", {}).get("teams_language", None)
+
+    def zoom_closed_captions_language(self):
+        return self._settings.get("meeting_closed_captions", {}).get("zoom_language", None)
+
+    def meeting_closed_captions_merge_consecutive_captions(self):
+        return self._settings.get("meeting_closed_captions", {}).get("merge_consecutive_captions", False)
 
 
 class Bot(models.Model):
@@ -163,6 +429,7 @@ class Bot(models.Model):
 
     join_at = models.DateTimeField(null=True, blank=True, help_text="The time the bot should join the meeting")
     deduplication_key = models.CharField(max_length=1024, null=True, blank=True, help_text="Optional key for deduplicating bots")
+    calendar_event = models.ForeignKey(CalendarEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name="bots")
 
     def delete_data(self):
         # Check if bot is in a state where the data deleted event can be created
@@ -175,7 +442,8 @@ class Bot(models.Model):
 
             # Delete all utterances and recording files for each recording
             for recording in self.recordings.all():
-                # Delete all utterances first
+                # Delete all audio chunks and utterances first
+                recording.audio_chunks.all().delete()
                 recording.utterances.all().delete()
 
                 # Delete the actual recording file if it exists
@@ -240,7 +508,7 @@ class Bot(models.Model):
         return math.ceil(centicredits_active)
 
     def cpu_request(self):
-        from bots.utils import meeting_type_from_url
+        from bots.meeting_url_utils import meeting_type_from_url
 
         bot_meeting_type = meeting_type_from_url(self.meeting_url)
         meeting_type_env_var_substring = {
@@ -252,6 +520,7 @@ class Bot(models.Model):
         recording_mode_env_var_substring = {
             RecordingTypes.AUDIO_AND_VIDEO: "AUDIO_AND_VIDEO",
             RecordingTypes.AUDIO_ONLY: "AUDIO_ONLY",
+            RecordingTypes.NO_RECORDING: "NO_RECORDING",
         }.get(self.recording_type(), "UNKNOWN")
 
         env_var_name = f"{meeting_type_env_var_substring}_{recording_mode_env_var_substring}_BOT_CPU_REQUEST"
@@ -262,92 +531,18 @@ class Bot(models.Model):
             return default_cpu_request
         return value_from_env_var
 
-    def openai_transcription_prompt(self):
-        return self.settings.get("transcription_settings", {}).get("openai", {}).get("prompt", None)
-
-    def openai_transcription_model(self):
-        default_model = os.getenv("OPENAI_MODEL_NAME", "gpt-4o-transcribe")
-        return self.settings.get("transcription_settings", {}).get("openai", {}).get("model", default_model)
-
-    def openai_transcription_language(self):
-        return self.settings.get("transcription_settings", {}).get("openai", {}).get("language", None)
-
-    def gladia_code_switching_languages(self):
-        return self.settings.get("transcription_settings", {}).get("gladia", {}).get("code_switching_languages", None)
-
-    def gladia_enable_code_switching(self):
-        return self.settings.get("transcription_settings", {}).get("gladia", {}).get("enable_code_switching", False)
-
-    def assembly_ai_language_code(self):
-        return self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("language_code", None)
-
-    def assembly_ai_language_detection(self):
-        return self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("language_detection", False)
-
-    def assemblyai_keyterms_prompt(self):
-        return self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("keyterms_prompt", None)
-
-    def assemblyai_speech_model(self):
-        return self.settings.get("transcription_settings", {}).get("assembly_ai", {}).get("speech_model", None)
-
-    def sarvam_language_code(self):
-        return self.settings.get("transcription_settings", {}).get("sarvam", {}).get("language_code", None)
-
-    def sarvam_model(self):
-        return self.settings.get("transcription_settings", {}).get("sarvam", {}).get("model", None)
-
-    def deepgram_language(self):
-        return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("language", None)
-
-    def deepgram_detect_language(self):
-        return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("detect_language", None)
-
-    def deepgram_callback(self):
-        return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("callback", None)
-
-    def deepgram_keyterms(self):
-        return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("keyterms", None)
-
-    def deepgram_keywords(self):
-        return self.settings.get("transcription_settings", {}).get("deepgram", {}).get("keywords", None)
-
-    def deepgram_use_streaming(self):
-        return self.deepgram_callback() is not None
-
-    def deepgram_model(self):
-        model_from_settings = self.settings.get("transcription_settings", {}).get("deepgram", {}).get("model", None)
-        if model_from_settings:
-            return model_from_settings
-
-        # nova-3 does not have multilingual support yet, so we need to use nova-2 if we're transcribing with a non-default language
-        if (self.deepgram_language() != "en" and self.deepgram_language()) or self.deepgram_detect_language():
-            deepgram_model = "nova-2"
-        else:
-            deepgram_model = "nova-3"
-
-        # Special case: we can use nova-3 for language=multi
-        if self.deepgram_language() == "multi":
-            deepgram_model = "nova-3"
-
-        return deepgram_model
-
-    def google_meet_closed_captions_language(self):
-        return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("google_meet_language", None)
-
-    def teams_closed_captions_language(self):
-        return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("teams_language", None)
-
-    def zoom_closed_captions_language(self):
-        return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("zoom_language", None)
-
-    def meeting_closed_captions_merge_consecutive_captions(self):
-        return self.settings.get("transcription_settings", {}).get("meeting_closed_captions", {}).get("merge_consecutive_captions", False)
+    @property
+    def transcription_settings(self):
+        return TranscriptionSettings(self.settings.get("transcription_settings"))
 
     def teams_use_bot_login(self):
         return self.settings.get("teams_settings", {}).get("use_login", False)
 
     def use_zoom_web_adapter(self):
         return self.settings.get("zoom_settings", {}).get("sdk", "native") == "web"
+
+    def zoom_meeting_settings(self):
+        return self.settings.get("zoom_settings", {}).get("meeting_settings", {})
 
     def rtmp_destination_url(self):
         rtmp_settings = self.settings.get("rtmp_settings")
@@ -373,6 +568,13 @@ class Bot(models.Model):
         websocket_audio_settings = websocket_settings.get("audio") or {}
         return websocket_audio_settings.get("sample_rate", 16000)
 
+    def voice_agent_url(self):
+        voice_agent_settings = self.settings.get("voice_agent_settings", {}) or {}
+        return voice_agent_settings.get("url", None)
+
+    def should_launch_webpage_streamer(self):
+        return bool(self.voice_agent_url())
+
     def zoom_tokens_callback_url(self):
         callback_settings = self.settings.get("callback_settings", {})
         if callback_settings is None:
@@ -385,6 +587,20 @@ class Bot(models.Model):
             recording_settings = {}
         return recording_settings.get("format", RecordingFormats.MP4)
 
+    def record_chat_messages_when_paused(self):
+        recording_settings = self.settings.get("recording_settings", {})
+        if recording_settings is None:
+            recording_settings = {}
+        return recording_settings.get("record_chat_messages_when_paused", False)
+
+    def record_async_transcription_audio_chunks(self):
+        if not self.project.organization.is_async_transcription_enabled:
+            return False
+        recording_settings = self.settings.get("recording_settings", {})
+        if recording_settings is None:
+            recording_settings = {}
+        return recording_settings.get("record_async_transcription_audio_chunks", False)
+
     def recording_type(self):
         # Recording type is derived from the recording format
         recording_format = self.recording_format()
@@ -392,6 +608,8 @@ class Bot(models.Model):
             return RecordingTypes.AUDIO_AND_VIDEO
         elif recording_format == RecordingFormats.MP3:
             return RecordingTypes.AUDIO_ONLY
+        elif recording_format == RecordingFormats.NONE:
+            return RecordingTypes.NO_RECORDING
         else:
             raise ValueError(f"Invalid recording format: {recording_format}")
 
@@ -413,17 +631,29 @@ class Bot(models.Model):
         return str(save_resource_snapshots_env_var_value).lower() == "true"
 
     def create_debug_recording(self):
-        from bots.utils import meeting_type_from_url
+        from bots.meeting_url_utils import meeting_type_from_url
 
         # Temporarily enabling this for all google meet meetings
         bot_meeting_type = meeting_type_from_url(self.meeting_url)
-        if (bot_meeting_type == MeetingTypes.GOOGLE_MEET or bot_meeting_type == MeetingTypes.TEAMS or (bot_meeting_type == MeetingTypes.ZOOM and self.use_zoom_web_adapter)) and not self.recording_type() == RecordingTypes.AUDIO_ONLY:
+        if (bot_meeting_type == MeetingTypes.GOOGLE_MEET or bot_meeting_type == MeetingTypes.TEAMS or (bot_meeting_type == MeetingTypes.ZOOM and self.use_zoom_web_adapter())) and self.recording_type() == RecordingTypes.AUDIO_AND_VIDEO:
             return True
 
         debug_settings = self.settings.get("debug_settings", {})
         if debug_settings is None:
             debug_settings = {}
         return debug_settings.get("create_debug_recording", False)
+
+    def external_media_storage_bucket_name(self):
+        external_media_storage_settings = self.settings.get("external_media_storage_settings", {})
+        if external_media_storage_settings is None:
+            external_media_storage_settings = {}
+        return external_media_storage_settings.get("bucket_name", None)
+
+    def external_media_storage_recording_file_name(self):
+        external_media_storage_settings = self.settings.get("external_media_storage_settings", {})
+        if external_media_storage_settings is None:
+            external_media_storage_settings = {}
+        return external_media_storage_settings.get("recording_file_name", None)
 
     def last_bot_event(self):
         return self.bot_events.order_by("-created_at").first()
@@ -440,6 +670,9 @@ class Bot(models.Model):
 
     def k8s_pod_name(self):
         return f"bot-pod-{self.id}-{self.object_id}".lower().replace("_", "-")
+
+    def k8s_webpage_streamer_service_hostname(self):
+        return self.k8s_pod_name() + "-webpage-streamer-service.attendee-webpage-streamer.svc.cluster.local"
 
     def automatic_leave_settings(self):
         return self.settings.get("automatic_leave_settings", {})
@@ -560,6 +793,11 @@ class BotEventTypes(models.IntegerChoices):
     STAGED = 12, "Bot staged"
     RECORDING_PAUSED = 13, "Recording Paused"
     RECORDING_RESUMED = 14, "Recording Resumed"
+    BOT_JOINED_BREAKOUT_ROOM = 15, "Bot joined breakout room"
+    BOT_LEFT_BREAKOUT_ROOM = 16, "Bot left breakout room"
+    BOT_BEGAN_JOINING_BREAKOUT_ROOM = 17, "Bot began joining breakout room"
+    BOT_BEGAN_LEAVING_BREAKOUT_ROOM = 18, "Bot began leaving breakout room"
+    BOT_RECORDING_PERMISSION_DENIED = 19, "Bot recording permission denied"
 
     @classmethod
     def type_to_api_code(cls, value):
@@ -579,6 +817,11 @@ class BotEventTypes(models.IntegerChoices):
             cls.STAGED: "staged",
             cls.RECORDING_PAUSED: "recording_paused",
             cls.RECORDING_RESUMED: "recording_resumed",
+            cls.BOT_JOINED_BREAKOUT_ROOM: "joined_breakout_room",
+            cls.BOT_LEFT_BREAKOUT_ROOM: "left_breakout_room",
+            cls.BOT_BEGAN_JOINING_BREAKOUT_ROOM: "began_joining_breakout_room",
+            cls.BOT_BEGAN_LEAVING_BREAKOUT_ROOM: "began_leaving_breakout_room",
+            cls.BOT_RECORDING_PERMISSION_DENIED: "recording_permission_denied",
         }
         return mapping.get(value)
 
@@ -613,7 +856,7 @@ class BotEventSubTypes(models.IntegerChoices):
     )
     COULD_NOT_JOIN_MEETING_UNPUBLISHED_ZOOM_APP = (
         5,
-        "Bot could not join meeting - Unpublished Zoom Apps cannot join external meetings. See https://developers.zoom.us/blog/prepare-meeting-sdk-app-for-review",
+        "Bot could not join meeting - Unpublished Zoom Apps cannot join external meetings. See https://developers.zoom.us/docs/distribute/sdk-feature-review-requirements/",
     )
     FATAL_ERROR_RTMP_CONNECTION_FAILED = 6, "Fatal error - RTMP Connection Failed"
     COULD_NOT_JOIN_MEETING_ZOOM_SDK_INTERNAL_ERROR = (
@@ -641,6 +884,9 @@ class BotEventSubTypes(models.IntegerChoices):
     FATAL_ERROR_OUT_OF_CREDITS = 20, "Fatal error - Out of credits"
     COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING = 21, "Bot could not join meeting - Unable to connect to meeting. This usually means the meeting password in the URL is incorrect."
     FATAL_ERROR_ATTENDEE_INTERNAL_ERROR = 22, "Fatal error - Attendee internal error"
+    BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION = 23, "Bot recording permission denied - Host denied permission"
+    BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT = 24, "Bot recording permission denied - Request timed out"
+    BOT_RECORDING_PERMISSION_DENIED_HOST_CLIENT_CANNOT_GRANT_PERMISSION = 25, "Bot recording permission denied - Host client cannot grant permission"
 
     @classmethod
     def sub_type_to_api_code(cls, value):
@@ -668,6 +914,9 @@ class BotEventSubTypes(models.IntegerChoices):
             cls.FATAL_ERROR_OUT_OF_CREDITS: "out_of_credits",
             cls.COULD_NOT_JOIN_UNABLE_TO_CONNECT_TO_MEETING: "unable_to_connect_to_meeting",
             cls.FATAL_ERROR_ATTENDEE_INTERNAL_ERROR: "attendee_internal_error",
+            cls.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION: "host_denied_permission",
+            cls.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT: "request_timed_out",
+            cls.BOT_RECORDING_PERMISSION_DENIED_HOST_CLIENT_CANNOT_GRANT_PERMISSION: "host_client_cannot_grant_permission",
         }
         return mapping.get(value)
 
@@ -716,12 +965,29 @@ class BotEvent(models.Model):
                     # For LEAVE_REQUESTED event type, must have one of the valid event subtypes or be null (for backwards compatibility, this will eventually be removed)
                     (Q(event_type=BotEventTypes.LEAVE_REQUESTED) & (Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_USER_REQUESTED) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_SILENCE) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_ONLY_PARTICIPANT_IN_MEETING) | Q(event_sub_type=BotEventSubTypes.LEAVE_REQUESTED_AUTO_LEAVE_MAX_UPTIME_EXCEEDED) | Q(event_sub_type__isnull=True)))
                     |
+                    # For BOT_RECORDING_PERMISSION_DENIED event type, must have one of the valid event subtypes
+                    (Q(event_type=BotEventTypes.BOT_RECORDING_PERMISSION_DENIED) & (Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_HOST_DENIED_PERMISSION) | Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_REQUEST_TIMED_OUT) | Q(event_sub_type=BotEventSubTypes.BOT_RECORDING_PERMISSION_DENIED_HOST_CLIENT_CANNOT_GRANT_PERMISSION)))
+                    |
                     # For all other events, event_sub_type must be null
                     (~Q(event_type=BotEventTypes.FATAL_ERROR) & ~Q(event_type=BotEventTypes.COULD_NOT_JOIN) & ~Q(event_type=BotEventTypes.LEAVE_REQUESTED) & Q(event_sub_type__isnull=True))
                 ),
                 name="valid_event_type_event_sub_type_combinations",
             )
         ]
+
+
+class BotEventTransitionFunctions:
+    @classmethod
+    def get_to_state_for_bot_breakout_room_event(cls, bot: Bot):
+        # Get the last event from the bot
+        last_bot_event = bot.last_bot_event()
+        if last_bot_event.event_type not in [BotEventTypes.BOT_BEGAN_JOINING_BREAKOUT_ROOM, BotEventTypes.BOT_BEGAN_LEAVING_BREAKOUT_ROOM]:
+            raise Exception(f"In get_to_state_for_bot_breakout_room_event unexpected event type for last bot event: {last_bot_event.event_type}")
+
+        last_bot_event_from_state = last_bot_event.old_state
+        if last_bot_event_from_state not in [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED]:
+            raise Exception(f"In get_to_state_for_bot_breakout_room_event unexpected from_state for last bot event: {last_bot_event_from_state}")
+        return last_bot_event_from_state
 
 
 class BotEventManager:
@@ -745,11 +1011,14 @@ class BotEventManager:
                 BotStates.JOINED_RECORDING_PAUSED,
                 BotStates.JOINED_RECORDING,
                 BotStates.JOINED_NOT_RECORDING,
+                BotStates.JOINED_RECORDING_PERMISSION_DENIED,
                 BotStates.WAITING_ROOM,
                 BotStates.LEAVING,
                 BotStates.POST_PROCESSING,
                 BotStates.STAGED,
                 BotStates.SCHEDULED,
+                BotStates.JOINING_BREAKOUT_ROOM,
+                BotStates.LEAVING_BREAKOUT_ROOM,
             ],
             "to": BotStates.FATAL_ERROR,
         },
@@ -762,7 +1031,7 @@ class BotEventManager:
             "to": BotStates.JOINED_NOT_RECORDING,
         },
         BotEventTypes.BOT_RECORDING_PERMISSION_GRANTED: {
-            "from": BotStates.JOINED_NOT_RECORDING,
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED],
             "to": BotStates.JOINED_RECORDING,
         },
         BotEventTypes.MEETING_ENDED: {
@@ -770,9 +1039,12 @@ class BotEventManager:
                 BotStates.JOINED_RECORDING_PAUSED,
                 BotStates.JOINED_RECORDING,
                 BotStates.JOINED_NOT_RECORDING,
+                BotStates.JOINED_RECORDING_PERMISSION_DENIED,
                 BotStates.WAITING_ROOM,
                 BotStates.JOINING,
                 BotStates.LEAVING,
+                BotStates.JOINING_BREAKOUT_ROOM,
+                BotStates.LEAVING_BREAKOUT_ROOM,
             ],
             "to": BotStates.POST_PROCESSING,
         },
@@ -781,8 +1053,11 @@ class BotEventManager:
                 BotStates.JOINED_RECORDING_PAUSED,
                 BotStates.JOINED_RECORDING,
                 BotStates.JOINED_NOT_RECORDING,
+                BotStates.JOINED_RECORDING_PERMISSION_DENIED,
                 BotStates.WAITING_ROOM,
                 BotStates.JOINING,
+                BotStates.JOINING_BREAKOUT_ROOM,
+                BotStates.LEAVING_BREAKOUT_ROOM,
             ],
             "to": BotStates.LEAVING,
         },
@@ -805,6 +1080,30 @@ class BotEventManager:
         BotEventTypes.RECORDING_RESUMED: {
             "from": BotStates.JOINED_RECORDING_PAUSED,
             "to": BotStates.JOINED_RECORDING,
+        },
+        BotEventTypes.BOT_JOINED_BREAKOUT_ROOM: {
+            "from": BotStates.JOINING_BREAKOUT_ROOM,
+            # This is a special case where the to state depends on the current recording's state, so we specify a function
+            # instead of a constant
+            "to": BotEventTransitionFunctions.get_to_state_for_bot_breakout_room_event,
+        },
+        BotEventTypes.BOT_LEFT_BREAKOUT_ROOM: {
+            "from": BotStates.LEAVING_BREAKOUT_ROOM,
+            # This is a special case where the to state depends on the current recording's state, so we specify a function
+            # instead of a constant
+            "to": BotEventTransitionFunctions.get_to_state_for_bot_breakout_room_event,
+        },
+        BotEventTypes.BOT_BEGAN_JOINING_BREAKOUT_ROOM: {
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
+            "to": BotStates.JOINING_BREAKOUT_ROOM,
+        },
+        BotEventTypes.BOT_BEGAN_LEAVING_BREAKOUT_ROOM: {
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
+            "to": BotStates.LEAVING_BREAKOUT_ROOM,
+        },
+        BotEventTypes.BOT_RECORDING_PERMISSION_DENIED: {
+            "from": [BotStates.JOINED_NOT_RECORDING, BotStates.JOINED_RECORDING_PERMISSION_DENIED, BotStates.JOINED_RECORDING, BotStates.JOINED_RECORDING_PAUSED],
+            "to": BotStates.JOINED_RECORDING_PERMISSION_DENIED,
         },
     }
 
@@ -838,7 +1137,11 @@ class BotEventManager:
 
     @classmethod
     def is_state_that_can_play_media(cls, state: int):
-        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PAUSED
+        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PERMISSION_DENIED or state == BotStates.JOINED_RECORDING_PAUSED
+
+    @classmethod
+    def is_state_that_can_admit_from_waiting_room(cls, state: int):
+        return state == BotStates.JOINED_RECORDING or state == BotStates.JOINED_NOT_RECORDING or state == BotStates.JOINED_RECORDING_PERMISSION_DENIED or state == BotStates.JOINED_RECORDING_PAUSED
 
     @classmethod
     def is_state_that_can_pause_recording(cls, state: int):
@@ -873,9 +1176,29 @@ class BotEventManager:
         return q_filter
 
     @classmethod
-    def after_new_state_is_joined_recording(cls, bot: Bot, new_state: BotStates):
+    def get_pre_meeting_states_q_filter(cls):
+        """Returns a Q object to filter for pre meeting states"""
+        q_filter = models.Q()
+        for state in BotStates.pre_meeting_states():
+            q_filter |= models.Q(state=state)
+        return q_filter
+
+    @classmethod
+    def get_in_meeting_states_q_filter(cls):
+        """Returns a Q object to filter for in meeting states"""
+        # In meeting states are all states that are not pre-meeting or post-meeting
+        pre_meeting_q = cls.get_pre_meeting_states_q_filter()
+        post_meeting_q = cls.get_post_meeting_states_q_filter()
+        return ~(pre_meeting_q | post_meeting_q)
+
+    @classmethod
+    def after_new_state_is_joined_recording(cls, bot: Bot, event_type: BotEventTypes, new_state: BotStates):
         pending_recordings = bot.recordings.filter(state__in=[RecordingStates.NOT_STARTED, RecordingStates.PAUSED])
         if pending_recordings.count() != 1:
+            # If bot was joining or leaving a breakout room, we don't expect there to be a recording that is ready to be started
+            # so we just return, and don't raise an exception
+            if event_type == BotEventTypes.BOT_JOINED_BREAKOUT_ROOM or event_type == BotEventTypes.BOT_LEFT_BREAKOUT_ROOM:
+                return
             raise ValidationError(f"Expected exactly one pending recording for bot {bot.object_id} in state {BotStates.state_to_api_code(new_state)}, but found {pending_recordings.count()}")
         pending_recording = pending_recordings.first()
         RecordingManager.set_recording_in_progress(pending_recording)
@@ -885,6 +1208,16 @@ class BotEventManager:
         in_progress_recordings = bot.recordings.filter(state=RecordingStates.IN_PROGRESS)
         if in_progress_recordings.count() != 1:
             raise ValidationError(f"Expected exactly one in progress recording for bot {bot.object_id} in state {BotStates.state_to_api_code(new_state)}, but found {in_progress_recordings.count()}")
+        in_progress_recording = in_progress_recordings.first()
+        RecordingManager.set_recording_paused(in_progress_recording)
+
+    @classmethod
+    def after_new_state_is_joined_recording_permission_denied(cls, bot: Bot, new_state: BotStates):
+        in_progress_recordings = bot.recordings.filter(state=RecordingStates.IN_PROGRESS)
+        if in_progress_recordings.count() > 1:
+            raise ValidationError(f"Expected at most one in progress recording for bot {bot.object_id} in state {BotStates.state_to_api_code(new_state)}, but found {in_progress_recordings.count()}")
+        if in_progress_recordings.count() == 0:
+            return
         in_progress_recording = in_progress_recordings.first()
         RecordingManager.set_recording_paused(in_progress_recording)
 
@@ -979,7 +1312,12 @@ class BotEventManager:
                         raise ValidationError(f"Event {BotEventTypes.type_to_api_code(event_type)} not allowed when bot is in state {BotStates.state_to_api_code(old_state)}. It is only allowed in these states: {', '.join(valid_states_labels)}")
 
                     # Update bot state based on 'to' definition
-                    new_state = transition["to"]
+                    if callable(transition["to"]):
+                        # If 'to' is a function, call it with the bot to get the new state
+                        new_state = transition["to"](bot)
+                    else:
+                        # If 'to' is a constant, use it directly
+                        new_state = transition["to"]
                     bot.state = new_state
 
                     bot.save()  # This will raise RecordModifiedError if version mismatch
@@ -995,10 +1333,13 @@ class BotEventManager:
 
                     # If we moved to the recording state
                     if new_state == BotStates.JOINED_RECORDING:
-                        cls.after_new_state_is_joined_recording(bot=bot, new_state=new_state)
+                        cls.after_new_state_is_joined_recording(bot=bot, event_type=event_type, new_state=new_state)
 
                     if new_state == BotStates.JOINED_RECORDING_PAUSED:
                         cls.after_new_state_is_joined_recording_paused(bot=bot, new_state=new_state)
+
+                    if new_state == BotStates.JOINED_RECORDING_PERMISSION_DENIED:
+                        cls.after_new_state_is_joined_recording_permission_denied(bot=bot, new_state=new_state)
 
                     # If we transitioned to a post meeting state
                     transitioned_to_post_meeting_state = cls.is_post_meeting_state(new_state) and not cls.is_post_meeting_state(old_state)
@@ -1054,6 +1395,7 @@ class Participant(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     object_id = models.CharField(max_length=255, unique=True, editable=False, blank=True, null=True)
     is_the_bot = models.BooleanField(default=False, db_default=False)
+    is_host = models.BooleanField(default=False, db_default=False)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["bot", "uuid"], name="unique_participant_per_bot")]
@@ -1146,6 +1488,7 @@ class RecordingTranscriptionStates(models.IntegerChoices):
 class RecordingTypes(models.IntegerChoices):
     AUDIO_AND_VIDEO = 1, "Audio and Video"
     AUDIO_ONLY = 2, "Audio Only"
+    NO_RECORDING = 3, "No Recording"
 
 
 class RecordingResolutions(models.TextChoices):
@@ -1175,6 +1518,7 @@ class TranscriptionProviders(models.IntegerChoices):
     OPENAI = 4, "OpenAI"
     ASSEMBLY_AI = 5, "Assembly AI"
     SARVAM = 6, "Sarvam"
+    ELEVENLABS = 7, "ElevenLabs"
 
 
 from storages.backends.s3boto3 import S3Boto3Storage
@@ -1248,8 +1592,8 @@ class RecordingManager:
     @classmethod
     def terminate_recording(cls, recording: Recording):
         if recording.state == RecordingStates.IN_PROGRESS or recording.state == RecordingStates.PAUSED:
-            # If we don't have a recording file, then it failed.
-            if recording.file:
+            # If we don't have a recording file AND we intended to generate one, then it failed.
+            if recording.file or recording.bot.recording_type() == RecordingTypes.NO_RECORDING:
                 RecordingManager.set_recording_complete(recording)
             else:
                 RecordingManager.set_recording_failed(recording)
@@ -1265,6 +1609,15 @@ class RecordingManager:
                 RecordingManager.set_recording_transcription_failed(recording, failure_data={"failure_reasons": failure_reasons})
             else:
                 RecordingManager.set_recording_transcription_complete(recording)
+
+    @classmethod
+    def get_recording_in_progress(cls, bot: Bot):
+        recordings_in_progress = Recording.objects.filter(bot=bot, state__in=[RecordingStates.IN_PROGRESS, RecordingStates.PAUSED])
+        if recordings_in_progress.count() == 0:
+            return None
+        if recordings_in_progress.count() > 1:
+            raise Exception(f"Expected at most one recording in progress for bot {bot.object_id}, but found {recordings_in_progress.count()}")
+        return recordings_in_progress.first()
 
     @classmethod
     def set_recording_in_progress(cls, recording: Recording):
@@ -1382,6 +1735,144 @@ class TranscriptionFailureReasons(models.TextChoices):
     INTERNAL_ERROR = "internal_error"
     # This reason applies to the transcription operation as a whole, not a specific utterance
     UTTERANCES_STILL_IN_PROGRESS_WHEN_RECORDING_TERMINATED = "utterances_still_in_progress_when_recording_terminated"
+    UTTERANCES_STILL_IN_PROGRESS_WHEN_TRANSCRIPTION_TERMINATED = "utterances_still_in_progress_when_transcription_terminated"
+
+
+class AsyncTranscriptionStates(models.IntegerChoices):
+    NOT_STARTED = 1, "Not Started"
+    IN_PROGRESS = 2, "In Progress"
+    COMPLETE = 3, "Complete"
+    FAILED = 4, "Failed"
+
+    @classmethod
+    def state_to_api_code(cls, value):
+        """Returns the API code for a given state value"""
+        mapping = {
+            cls.NOT_STARTED: "not_started",
+            cls.IN_PROGRESS: "in_progress",
+            cls.COMPLETE: "complete",
+            cls.FAILED: "failed",
+        }
+        return mapping.get(value)
+
+
+class AsyncTranscription(models.Model):
+    OBJECT_ID_PREFIX = "tran_"
+    object_id = models.CharField(max_length=32, unique=True, editable=False)
+    state = models.IntegerField(choices=AsyncTranscriptionStates.choices, default=AsyncTranscriptionStates.NOT_STARTED)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="async_transcriptions")
+    settings = models.JSONField(null=False, default=dict)
+    failure_data = models.JSONField(null=True, default=None)
+    version = IntegerVersionField()
+
+    def save(self, *args, **kwargs):
+        if not self.object_id:
+            # Generate a random 16-character string
+            random_string = "".join(random.choices(string.ascii_letters + string.digits, k=16))
+            self.object_id = f"{self.OBJECT_ID_PREFIX}{random_string}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Post Meeting Transcription {self.object_id} - {self.get_state_display()}"
+
+    @property
+    def transcription_settings(self):
+        return TranscriptionSettings(self.settings.get("transcription_settings"))
+
+    @property
+    def transcription_provider(self):
+        # Pretty hacky, we should derive the transcription provider in a simpler way in the future.
+        # But for now, we're going to do this to keep it consistent with how it works for normal transcriptions.
+        from .utils import transcription_provider_from_bot_creation_data
+
+        return transcription_provider_from_bot_creation_data({**self.recording.bot.settings, **self.settings})
+
+
+class AsyncTranscriptionManager:
+    @classmethod
+    def set_async_transcription_in_progress(cls, async_transcription: AsyncTranscription):
+        async_transcription.refresh_from_db()
+
+        if async_transcription.state == AsyncTranscriptionStates.IN_PROGRESS:
+            return
+        if async_transcription.state != AsyncTranscriptionStates.NOT_STARTED:
+            raise ValueError(f"Invalid state transition. Async transcription {async_transcription.id} is in state {async_transcription.get_state_display()}")
+
+        async_transcription.state = AsyncTranscriptionStates.IN_PROGRESS
+        async_transcription.started_at = timezone.now()
+        async_transcription.save()
+
+        cls.delivery_webhook(async_transcription)
+
+    @classmethod
+    def set_async_transcription_complete(cls, async_transcription: AsyncTranscription):
+        async_transcription.refresh_from_db()
+
+        if async_transcription.state == AsyncTranscriptionStates.COMPLETE:
+            return
+        if async_transcription.state != AsyncTranscriptionStates.IN_PROGRESS:
+            raise ValueError(f"Invalid state transition. Async transcription {async_transcription.id} is in state {async_transcription.get_state_display()}")
+
+        async_transcription.state = AsyncTranscriptionStates.COMPLETE
+        async_transcription.completed_at = timezone.now()
+        async_transcription.save()
+
+        cls.delivery_webhook(async_transcription)
+
+    @classmethod
+    def delivery_webhook(cls, async_transcription: AsyncTranscription):
+        trigger_webhook(
+            webhook_trigger_type=WebhookTriggerTypes.ASYNC_TRANSCRIPTION_STATE_CHANGE,
+            bot=async_transcription.recording.bot,
+            payload={
+                "state": AsyncTranscriptionStates.state_to_api_code(async_transcription.state),
+                "id": async_transcription.object_id,
+                "failure_data": async_transcription.failure_data,
+            },
+        )
+
+    @classmethod
+    def set_async_transcription_failed(cls, async_transcription: AsyncTranscription, failure_data: dict):
+        async_transcription.refresh_from_db()
+
+        if async_transcription.state == AsyncTranscriptionStates.FAILED:
+            return
+        if async_transcription.state != AsyncTranscriptionStates.IN_PROGRESS and async_transcription.state != AsyncTranscriptionStates.NOT_STARTED:
+            raise ValueError(f"Invalid state transition. Async transcription {async_transcription.id} is in state {async_transcription.get_state_display()}")
+
+        async_transcription.state = AsyncTranscriptionStates.FAILED
+        async_transcription.failure_data = failure_data
+        async_transcription.failed_at = timezone.now()
+        async_transcription.save()
+
+        cls.delivery_webhook(async_transcription)
+
+
+class AudioChunk(models.Model):
+    class Sources(models.IntegerChoices):
+        PER_PARTICIPANT_AUDIO = 1, "Per Participant Audio"
+        MIXED_AUDIO = 2, "Mixed Audio"
+
+    class AudioFormat(models.IntegerChoices):
+        PCM = 1, "PCM"
+        MP3 = 2, "MP3"
+
+    recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="audio_chunks")
+    audio_blob = models.BinaryField()
+    audio_format = models.IntegerField(choices=AudioFormat.choices, default=AudioFormat.PCM)
+    timestamp_ms = models.BigIntegerField()
+    duration_ms = models.IntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    sample_rate = models.IntegerField()
+
+    source = models.IntegerField(choices=Sources.choices, default=Sources.PER_PARTICIPANT_AUDIO)
+    participant = models.ForeignKey(Participant, on_delete=models.PROTECT, related_name="audio_chunks")
 
 
 class Utterance(models.Model):
@@ -1398,9 +1889,10 @@ class Utterance(models.Model):
         MP3 = 2, "MP3"
 
     recording = models.ForeignKey(Recording, on_delete=models.CASCADE, related_name="utterances")
+    # If none, the utterance is part of a real time transcription
+    async_transcription = models.ForeignKey(AsyncTranscription, on_delete=models.CASCADE, related_name="utterances", null=True, blank=True)
+    audio_chunk = models.ForeignKey(AudioChunk, on_delete=models.SET_NULL, related_name="utterances", null=True, blank=True)
     participant = models.ForeignKey(Participant, on_delete=models.PROTECT, related_name="utterances")
-    audio_blob = models.BinaryField()
-    audio_format = models.IntegerField(choices=AudioFormat.choices, default=AudioFormat.PCM, null=True)
     timestamp_ms = models.BigIntegerField()
     duration_ms = models.IntegerField()
     transcription = models.JSONField(null=True, default=None)
@@ -1408,15 +1900,44 @@ class Utterance(models.Model):
     transcription_attempt_count = models.IntegerField(default=0)
     failure_data = models.JSONField(null=True, default=None)
     source_uuid = models.CharField(max_length=255, null=True, unique=True)
-    sample_rate = models.IntegerField(null=True, default=None)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     source = models.IntegerField(choices=Sources.choices, default=Sources.PER_PARTICIPANT_AUDIO, null=False)
 
+    # These columns are deprecated, since we now have a separate AudioChunk model to store info about the source audio
+    # We are keeping them for backwards compatibility. They will eventually be removed.
+    audio_blob = models.BinaryField()
+    audio_format = models.IntegerField(choices=AudioFormat.choices, default=AudioFormat.PCM, null=True)
+    sample_rate = models.IntegerField(null=True, default=None)
+
     def __str__(self):
         return f"Utterance at {self.timestamp_ms}ms ({self.duration_ms}ms long)"
+
+    # Helper methods, because we may be working with an outdated model that is still using the audio_blob field
+    # on the utterance model and not using the separate audio chunk model.
+    def get_audio_blob(self):
+        if self.audio_chunk:
+            return self.audio_chunk.audio_blob
+        return self.audio_blob
+
+    def get_sample_rate(self):
+        if self.audio_chunk:
+            return self.audio_chunk.sample_rate
+        return self.sample_rate
+
+    @property
+    def transcription_settings(self):
+        if self.async_transcription:
+            return self.async_transcription.transcription_settings
+        return self.recording.bot.transcription_settings
+
+    @property
+    def transcription_provider(self):
+        if self.async_transcription:
+            return self.async_transcription.transcription_provider
+        return self.recording.transcription_provider
 
 
 class Credentials(models.Model):
@@ -1429,6 +1950,8 @@ class Credentials(models.Model):
         ASSEMBLY_AI = 6, "Assembly AI"
         SARVAM = 7, "Sarvam"
         TEAMS_BOT_LOGIN = 8, "Teams Bot Login"
+        EXTERNAL_MEDIA_STORAGE = 9, "External Media Storage"
+        ELEVENLABS = 10, "ElevenLabs"
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="credentials")
     credential_type = models.IntegerField(choices=CredentialTypes.choices, null=False)
@@ -1772,6 +2295,9 @@ class WebhookTriggerTypes(models.IntegerChoices):
     TRANSCRIPT_UPDATE = 2, "Transcript Update"
     CHAT_MESSAGES_UPDATE = 3, "Chat Messages Update"
     PARTICIPANT_EVENTS_JOIN_LEAVE = 4, "Participant Join/Leave"
+    CALENDAR_EVENTS_UPDATE = 5, "Calendar Events Update"
+    CALENDAR_STATE_CHANGE = 6, "Calendar State Change"
+    ASYNC_TRANSCRIPTION_STATE_CHANGE = 7, "Async Transcription State Change"
     # add other event types here
 
     @classmethod
@@ -1782,6 +2308,9 @@ class WebhookTriggerTypes(models.IntegerChoices):
             cls.TRANSCRIPT_UPDATE: "transcript.update",
             cls.CHAT_MESSAGES_UPDATE: "chat_messages.update",
             cls.PARTICIPANT_EVENTS_JOIN_LEAVE: "participant_events.join_leave",
+            cls.CALENDAR_EVENTS_UPDATE: "calendar.events_update",
+            cls.CALENDAR_STATE_CHANGE: "calendar.state_change",
+            cls.ASYNC_TRANSCRIPTION_STATE_CHANGE: "async_transcription.state_change",
         }
 
     @classmethod
@@ -1831,6 +2360,7 @@ class WebhookDeliveryAttempt(models.Model):
     webhook_trigger_type = models.IntegerField(choices=WebhookTriggerTypes.choices, default=WebhookTriggerTypes.BOT_STATE_CHANGE, null=False)
     idempotency_key = models.UUIDField(unique=True, editable=False)
     bot = models.ForeignKey(Bot, on_delete=models.SET_NULL, null=True, related_name="webhook_delivery_attempts")
+    calendar = models.ForeignKey(Calendar, on_delete=models.SET_NULL, null=True, related_name="webhook_delivery_attempts")
     payload = models.JSONField(default=dict)
     status = models.IntegerField(choices=WebhookDeliveryAttemptStatus.choices, default=WebhookDeliveryAttemptStatus.PENDING, null=False)
     attempt_count = models.IntegerField(default=0)

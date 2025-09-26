@@ -40,6 +40,9 @@ class StyleManager {
         this.silenceCheckInterval = null;
         this.memoryUsageCheckInterval = null;
         this.neededInteractionsInterval = null;
+
+        // Stream used which combines the audio tracks from the meeting. Does NOT include the bot's audio
+        this.meetingAudioStream = null;
     }
 
     addAudioTrack(audioTrack) {
@@ -181,6 +184,12 @@ class StyleManager {
         this.neededInteractionsInterval = setInterval(() => {
             this.checkNeededInteractions();
         }, 5000);
+
+        this.meetingAudioStream = destination.stream;
+    }
+
+    getMeetingAudioStream() {
+        return this.meetingAudioStream;
     }
     
     async processMixedAudioTrack() {
@@ -280,35 +289,89 @@ class StyleManager {
         this.showAllOfGMeetUI();
     }
 
-    hideBotVideoElement() {
-        const deviceIdOfBot = window.userManager.getUserByFullName(window.initialData.botName)?.deviceId;
-        console.log('deviceIdOfBot', deviceIdOfBot);
-        if (!deviceIdOfBot)
-            return;
-        const botVideoElement = document.querySelector(`[data-participant-id="${deviceIdOfBot}"]`);
-        console.log('botVideoElement', botVideoElement);
-        if (!botVideoElement)
-            return;
-        const botOtherOptionsButton = botVideoElement.querySelector('.VfPpkd-kBDsod');
-        console.log('botOtherOptionsButton', botOtherOptionsButton);
-        if (!botOtherOptionsButton)
-            return;
-
-        botOtherOptionsButton.click();
-        setTimeout(() => {
-            const botMinimizeButton = document.querySelector('li[aria-label="Minimize"]');            
-            console.log('botMinimizeButton', botMinimizeButton);
-            if (!botMinimizeButton)
+    async hideBotVideoElement() {
+        const numAttempts = 10; // 1 second / 100ms = 10 attempts
+        
+        if (window.userManager.getCurrentUsersInMeeting().length > 1)
+        {
+            const deviceIdOfBot = window.userManager.currentUserId;
+            if (!deviceIdOfBot)
+            {
+                window.ws.sendJson({
+                    type: 'Error',
+                    message: 'In hideBotVideoElement, window.userManager.currentUserId was null.'
+                });
                 return;
-            botMinimizeButton.click();
-            setTimeout(() => {
-                const botMinimizedElement = document.querySelector('div[jsname="Qiayqc"]');
-                console.log('botMinimizedElement', botMinimizedElement);
-                if (!botMinimizedElement)
+            }
+            const botVideoElement = document.querySelector(`[data-participant-id="${deviceIdOfBot}"]`);
+            if (!botVideoElement)
+            {
+                window.ws.sendJson({
+                    type: 'Error',
+                    message: 'In hideBotVideoElement, no bot video element found.'
+                });
+                return;
+            }
+            const botOtherOptionsButton = botVideoElement.querySelector('button[aria-label="More options"]');
+            if (!botOtherOptionsButton)
+            {
+                window.ws.sendJson({
+                    type: 'Error',
+                    message: 'In hideBotVideoElement, no bot other options button found.'
+                });
+                return;
+            }
+
+            botOtherOptionsButton.click();
+            
+            // Wait for minimize button to appear with polling
+            let botMinimizeButton = null;
+            for (let i = 0; i < numAttempts; i++) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                botMinimizeButton = document.querySelector('li[aria-label="Minimize"]');
+                if (botMinimizeButton) {
+                    break;
+                }
+                const wasLastAttempt = i === numAttempts - 1;
+                if (wasLastAttempt) {
+                    window.ws.sendJson({
+                        type: 'Error',
+                        message: 'In hideBotVideoElement, no bot minimize button found after polling.'
+                    });
                     return;
-                botMinimizedElement.style.display = 'none';
-            }, 200);            
-        }, 200);
+                }
+            }
+            
+            botMinimizeButton.click();
+        }
+        else
+        {
+            window.ws.sendJson({
+                type: 'Error',
+                message: 'In hideBotVideoElement, no other users in meeting. So unable to minimize bot video element.'
+            });
+        }
+
+
+        // Wait for minimized element to appear with polling
+        let botMinimizedElement = null;
+        for (let i = 0; i < numAttempts; i++) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            botMinimizedElement = document.querySelector('div[jsname="Qiayqc"]');
+            if (botMinimizedElement) {
+                break;
+            }
+            const wasLastAttempt = i === numAttempts - 1;
+            if (wasLastAttempt) {
+                window.ws.sendJson({
+                    type: 'Error',
+                    message: 'In hideBotVideoElement, no bot minimized element found after polling.'
+                });
+                return;
+            }
+        }
+        
+        botMinimizedElement.style.display = 'none';
     }
 
     showAllOfGMeetUI() {
@@ -333,7 +396,7 @@ class StyleManager {
         console.log('Restored all hidden elements to their original display values');
     }
 
-    onlyShowSubsetofGMeetUI() {
+    async onlyShowSubsetofGMeetUI() {
         try {
             // Find the main element that contains all the video elements
             this.mainElement = document.querySelector('main');
@@ -362,7 +425,7 @@ class StyleManager {
                 }
             });
 
-            // this.hideBotVideoElement();
+            await this.hideBotVideoElement();
         } catch (error) {
             console.error('Error in onlyShowSubsetofGMeetUI:', error);
             window.ws.sendJson({
@@ -492,7 +555,7 @@ class StyleManager {
 
         await this.openChatPanel();
 
-        this.onlyShowSubsetofGMeetUI();
+        await this.onlyShowSubsetofGMeetUI();
         
 
         if (window.initialData.recordingView === 'gallery_view')
@@ -724,7 +787,7 @@ class UserManager {
       );
       this.newUsersListSynced(uniqueUsers);
     }
-
+    
     newUsersListSynced(newUsersListRaw) {
         const newUsersList = newUsersListRaw.map(user => {
             const userStatusMap = {
@@ -741,7 +804,8 @@ class UserManager {
             return {
                 ...userWithoutIsCurrentUserString,
                 humanized_status: userStatusMap[user.status] || "unknown",
-                isCurrentUser: user.deviceId === this.currentUserId
+                isCurrentUser: user.deviceId === this.currentUserId,
+                isHost: !!user.isHost
             }
         })
         // Get the current user IDs before updating
@@ -763,7 +827,8 @@ class UserManager {
                 status: user.status,
                 humanized_status: user.humanized_status,
                 parentDeviceId: user.parentDeviceId,
-                isCurrentUser: user.isCurrentUser
+                isCurrentUser: user.isCurrentUser,
+                isHost: user.isHost
             });
         }
 
@@ -784,7 +849,8 @@ class UserManager {
                 status: user.status,
                 humanized_status: user.humanized_status,
                 parentDeviceId: user.parentDeviceId,
-                isCurrentUser: user.isCurrentUser
+                isCurrentUser: user.isCurrentUser,
+                isHost: user.isHost
             });
         }
 
@@ -1298,7 +1364,8 @@ const messageTypes = [
             { name: 'status', fieldNumber: 4, type: 'varint' }, // in meeting = 1 vs not in meeting = 6. kicked out = 7?
             { name: 'isCurrentUserString', fieldNumber: 7, type: 'string' }, // Presence of this string indicates that this is the current user. The string itself seems to be a random uuid
             { name: 'displayName', fieldNumber: 29, type: 'string' },
-            { name: 'parentDeviceId', fieldNumber: 21, type: 'string' } // if this is present, then this is a screenshare device. The parentDevice is the person that is sharing
+            { name: 'parentDeviceId', fieldNumber: 21, type: 'string' }, // if this is present, then this is a screenshare device. The parentDevice is the person that is sharing
+            { name: 'isHost', fieldNumber: 34, type: 'varint' } // Presence of this varint indicates that this is the host
         ]
     },
     {
@@ -2034,6 +2101,10 @@ class BotOutputManager {
         this.gainNode = null;
         this.destination = null;
         this.botOutputAudioTrack = null;
+
+        // For outputting a stream
+        this.botOutputMediaStream = null;
+        this.botOutputPeerConnection = null;
     }
 
     connectVideoSourceToAudioContext() {
@@ -2041,6 +2112,20 @@ class BotOutputManager {
             this.videoSoundSource = this.audioContextForBotOutput.createMediaElementSource(this.botOutputVideoElement);
             this.videoSoundSource.connect(this.gainNode);
         }
+    }
+
+    playMediaStream(stream) {
+        if (this.botOutputMediaStream) {
+            this.botOutputMediaStream.disconnect();
+        }
+        this.botOutputMediaStream = stream;
+        
+        turnOffMicAndCamera();
+
+        // after 1000 ms
+        setTimeout(() => {
+            turnOnMicAndCamera();
+        }, 1000);
     }
 
     playVideo(videoUrl) {
@@ -2359,6 +2444,82 @@ class BotOutputManager {
         const timeUntilNextProcess = (this.nextPlayTime - currentTime) * 1000 * 0.8;
         setTimeout(() => this.processAudioQueue(), Math.max(0, timeUntilNextProcess));
     }
+
+    async getBotOutputPeerConnectionOffer() {
+        try
+        {
+            // 2) Create the RTCPeerConnection
+            this.botOutputPeerConnection = new RTCPeerConnection();
+        
+            // 3) Receive the server's *video* and *audio*
+            const ms = new MediaStream();
+            this.botOutputPeerConnection.ontrack = (ev) => {
+                ms.addTrack(ev.track);
+                // If we've received both video and audio, play the stream
+                if (ms.getVideoTracks().length > 0 && ms.getAudioTracks().length > 0) {
+                    botOutputManager.playMediaStream(ms);
+                }
+            };
+        
+            // We still want to receive the server's video
+            this.botOutputPeerConnection.addTransceiver('video', { direction: 'recvonly' });
+        
+            // ❗ Instead of recvonly audio, we now **send** our mic upstream:
+            const meetingAudioStream = window.styleManager.getMeetingAudioStream();
+            for (const track of meetingAudioStream.getAudioTracks()) {
+                this.botOutputPeerConnection.addTrack(track, meetingAudioStream);
+            }
+        
+            // Create/POST offer → set remote answer
+            const offer = await this.botOutputPeerConnection.createOffer();
+            await this.botOutputPeerConnection.setLocalDescription(offer);
+            return { sdp: this.botOutputPeerConnection.localDescription.sdp, type: this.botOutputPeerConnection.localDescription.type };
+        }
+        catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    async startBotOutputPeerConnection(offerResponse) {
+        await this.botOutputPeerConnection.setRemoteDescription(offerResponse);
+        
+        // Start latency measurement for the bot output peer connection
+        this.startLatencyMeter(this.botOutputPeerConnection, "bot-output");
+    }
+
+    startLatencyMeter(pc, label="rx") {
+        setInterval(async () => {
+            const stats = await pc.getStats();
+            let rtt_ms = 0, jb_a_ms = 0, jb_v_ms = 0, dec_v_ms = 0;
+
+            stats.forEach(r => {
+                if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+                    rtt_ms = (r.currentRoundTripTime || 0) * 1000;
+                }
+                if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+                    const d = (r.jitterBufferDelay || 0);
+                    const n = (r.jitterBufferEmittedCount || 1);
+                    jb_a_ms = (d / n) * 1000;
+                }
+                if (r.type === 'inbound-rtp' && r.kind === 'video') {
+                    const d = (r.jitterBufferDelay || 0);
+                    const n = (r.jitterBufferEmittedCount || 1);
+                    jb_v_ms = (d / n) * 1000;
+                    dec_v_ms = ((r.totalDecodeTime || 0) / (r.framesDecoded || 1)) * 1000;
+                }
+            });
+
+            const est_audio_owd = (rtt_ms / 2) + jb_a_ms;
+            const est_video_owd = (rtt_ms / 2) + jb_v_ms + dec_v_ms;
+
+            const logStatement = `[${label}] est one-way: audio≈${est_audio_owd|0}ms, video≈${est_video_owd|0}ms  (rtt=${rtt_ms|0}, jb_a=${jb_a_ms|0}, jb_v=${jb_v_ms|0}, dec_v=${dec_v_ms|0})`;
+            console.log(logStatement);
+            window.ws.sendJson({
+                type: 'BOT_OUTPUT_PEER_CONNECTION_STATS',
+                logStatement: logStatement
+            });
+        }, 60000);
+    }
 }
 
 const botOutputManager = new BotOutputManager();
@@ -2386,6 +2547,10 @@ navigator.mediaDevices.getUserMedia = function(constraints) {
                 newStream.addTrack(botOutputManager.botOutputCanvasElementCaptureStream.getVideoTracks()[0]);
             }
          }
+         if (constraints.video && botOutputManager.botOutputMediaStream) {
+            console.log("Adding botOutputMediaStream", botOutputManager.botOutputMediaStream.getVideoTracks()[0]);
+            newStream.addTrack(botOutputManager.botOutputMediaStream.getVideoTracks()[0]);
+        }
 
         // Audio sending not supported yet
         
@@ -2398,6 +2563,16 @@ navigator.mediaDevices.getUserMedia = function(constraints) {
         // Video sending not supported yet
         if (botOutputManager.botOutputVideoElementCaptureStream) {
             botOutputManager.connectVideoSourceToAudioContext();
+        }
+
+        if (botOutputManager.botOutputMediaStream) {
+            // connect the botOutputMediaStream stream to the audio context
+            if (botOutputManager.botOutputMediaStream.getAudioTracks().length > 0) {
+                botOutputManager.initializeBotOutputAudioTrack();
+                const botOutputMediaStreamSource = botOutputManager.audioContextForBotOutput.createMediaStreamSource(botOutputManager.botOutputMediaStream);
+                botOutputMediaStreamSource.connect(botOutputManager.gainNode);
+                console.log("Connected botOutputMediaStream audio track to audio context");
+            }
         }
   
         return newStream;

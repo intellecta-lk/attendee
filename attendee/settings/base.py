@@ -174,6 +174,9 @@ CELERY_RESULT_SERIALIZER = "json"
 REST_FRAMEWORK = {
     # YOUR SETTINGS
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_RATES": {
+        "project_post": os.getenv("PROJECT_POST_THROTTLE_RATE", "3000/min"),
+    },
 }
 
 SPECTACULAR_SETTINGS = {
@@ -206,5 +209,10 @@ STORAGES = {
     },
 }
 AWS_S3_SIGNATURE_VERSION = "s3v4"
+if os.getenv("USE_IRSA_FOR_S3_STORAGE", "false") == "true":
+    AWS_S3_ADDRESSING_STYLE = "virtual"
 AWS_RECORDING_STORAGE_BUCKET_NAME = os.getenv("AWS_RECORDING_STORAGE_BUCKET_NAME")
 CHARGE_CREDITS_FOR_BOTS = os.getenv("CHARGE_CREDITS_FOR_BOTS", "false") == "true"
+
+BOT_POD_NAMESPACE = os.getenv("BOT_POD_NAMESPACE", "attendee")
+WEBPAGE_STREAMER_POD_NAMESPACE = os.getenv("WEBPAGE_STREAMER_POD_NAMESPACE", "attendee-webpage-streamer")
