@@ -226,6 +226,13 @@ class ZoomBotAdapter(BotAdapter):
             self.request_permission_to_record_if_joined_user_is_host(joined_user_id)
 
     def update_only_one_participant_in_meeting_at(self):
+        if not self.joined_at:
+            return
+
+        # If nobody other than the bot was ever in the meeting, then don't activate this. We only want to activate if someone else was in the meeting and left
+        if len(self._participant_cache) <= 1:
+            return
+
         all_participant_ids = self.participants_ctrl.GetParticipantsList()
         if len(all_participant_ids) == 1:
             if self.only_one_participant_in_meeting_at is None:
