@@ -230,7 +230,7 @@ class ZoomBotAdapter(BotAdapter):
             return
 
         # If nobody other than the bot was ever in the meeting, then don't activate this. We only want to activate if someone else was in the meeting and left
-        if len(self._participant_cache) <= 1:
+        if self.number_of_participants_ever_in_meeting() <= 1:
             return
 
         all_participant_ids = self.participants_ctrl.GetParticipantsList()
@@ -405,6 +405,9 @@ class ZoomBotAdapter(BotAdapter):
         except:
             logger.info(f"Error getting participant {participant_id}, falling back to cache")
             return self._participant_cache.get(participant_id)
+
+    def number_of_participants_ever_in_meeting(self):
+        return len(self._participant_cache)
 
     def on_sharing_status_callback(self, sharing_info):
         user_id = sharing_info.userid
