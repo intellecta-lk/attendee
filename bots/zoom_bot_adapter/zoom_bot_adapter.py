@@ -219,19 +219,23 @@ class ZoomBotAdapter(BotAdapter):
 
     def on_user_join_callback(self, joined_user_ids, _):
         logger.info(f"on_user_join_callback called. joined_user_ids = {joined_user_ids}")
+        self.update_only_one_participant_in_meeting_at()
         for joined_user_id in joined_user_ids:
             self.get_participant(joined_user_id)
             self.send_participant_event(joined_user_id, event_type=ParticipantEventTypes.JOIN)
             self.request_permission_to_record_if_joined_user_is_host(joined_user_id)
 
-    def on_user_left_callback(self, left_user_ids, _):
-        logger.info(f"on_user_left_callback called. left_user_ids = {left_user_ids}")
+    def update_only_one_participant_in_meeting_at(self):
         all_participant_ids = self.participants_ctrl.GetParticipantsList()
         if len(all_participant_ids) == 1:
             if self.only_one_participant_in_meeting_at is None:
                 self.only_one_participant_in_meeting_at = time.time()
         else:
             self.only_one_participant_in_meeting_at = None
+
+    def on_user_left_callback(self, left_user_ids, _):
+        logger.info(f"on_user_left_callback called. left_user_ids = {left_user_ids}")
+        self.update_only_one_participant_in_meeting_at()
 
         for left_user_id in left_user_ids:
             self.send_participant_event(left_user_id, event_type=ParticipantEventTypes.LEAVE)
