@@ -1925,7 +1925,7 @@ components:
                   type: array
                   items:
                     type: string
-                  description: 'Find and replace terms or phrases in the transcript.
+                  description: 'Array of terms to find and replace in the transcript.
                     Each string should be in the format ''term_to_find:replacement_term''
                     (e.g., ''kpis:Key Performance Indicators''). See here for details:
                     https://developers.deepgram.com/docs/find-and-replace'
