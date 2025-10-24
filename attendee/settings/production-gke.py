@@ -1,8 +1,10 @@
 import os
+import sys
 
 import dj_database_url
 
 from .base import *
+from .base import LOG_FORMATTERS
 
 DEBUG = False
 ALLOWED_HOSTS = ["*"]
@@ -20,6 +22,8 @@ DATABASES = {
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # Disabling these because it's enforced at the ingress level on GKE
@@ -51,13 +55,15 @@ SERVER_EMAIL = "noreply@mail.attendee.dev"
 # Needed on GKE
 CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "https://*.attendee.dev").split(",")
 
-# Log more stuff in staging
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "formatters": LOG_FORMATTERS,
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+            "stream": sys.stdout,
+            "formatter": os.getenv("ATTENDEE_LOG_FORMAT"),  # `None` (default formatter) is the default
         },
     },
     "root": {
