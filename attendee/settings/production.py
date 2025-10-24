@@ -4,6 +4,7 @@ import sys
 import dj_database_url
 
 from .base import *
+from .base import LOG_FORMATTERS
 
 DEBUG = False
 ALLOWED_HOSTS = ["*"]
@@ -53,15 +54,12 @@ SERVER_EMAIL = os.getenv("SERVER_EMAIL", "noreply@mail.attendee.dev")
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "formatters": {
-        "plain": {"format": "{levelname} {message}", "style": "{"},
-        "json": {"class": "attendee.logging.ISOJsonFormatter", "format": "%(timestamp)s %(name)s %(levelname)s %(message)s"},
-    },
+    "formatters": LOG_FORMATTERS,
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "stream": sys.stdout,
-            "formatter": os.getenv("ATTENDEE_LOG_FORMAT"),  # `None` is the default
+            "formatter": os.getenv("ATTENDEE_LOG_FORMAT"),  # `None` (default formatter) is the default
         },
     },
     "root": {
