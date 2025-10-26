@@ -240,6 +240,7 @@ def get_transcription_via_deepgram(utterance):
         encoding="linear16",  # for 16-bit PCM
         sample_rate=utterance.get_sample_rate(),
         redact=transcription_settings.deepgram_redaction_settings(),
+        replace=transcription_settings.deepgram_replace_settings(),
     )
 
     deepgram_credentials_record = recording.bot.project.credentials.filter(credential_type=Credentials.CredentialTypes.DEEPGRAM).first()
@@ -332,6 +333,13 @@ def get_transcription_via_assemblyai(utterance):
     api_key = assemblyai_credentials.get("api_key")
     if not api_key:
         return None, {"reason": TranscriptionFailureReasons.CREDENTIALS_NOT_FOUND, "error": "api_key not in credentials"}
+
+    # If the audio blob is less than 175ms in duration, just return an empty transcription
+    # Audio clips this short are almost never generated, it almost certainly didn't have any speech
+    # and if we send it to the assemblyai api, the upload will fail
+    if utterance.duration_ms < 175:
+        logger.info(f"AssemblyAI transcription skipped for utterance {utterance.id} because it's less than 175ms in duration")
+        return {"transcript": "", "words": []}, None
 
     headers = {"authorization": api_key}
     base_url = transcription_settings.assemblyai_base_url()

@@ -901,7 +901,8 @@ class UserManager {
             status: user.state,
             humanized_status: user.state === "active" ? "in_meeting" : "not_in_meeting",
             isCurrentUser: (!!currentUserId) && (user.details.id === currentUserId),
-            isHost: user.meetingRole === "organizer"
+            isHost: user.meetingRole === "organizer",
+            meetingId: user.callId,
         }
     }
 
@@ -940,7 +941,8 @@ class UserManager {
                 humanized_status: user.humanized_status,
                 parentDeviceId: user.parentDeviceId,
                 isCurrentUser: user.isCurrentUser,
-                isHost: user.isHost
+                isHost: user.isHost,
+                meetingId: user.meetingId
             });
         }
 
@@ -966,7 +968,8 @@ class UserManager {
                 humanized_status: user.humanized_status,
                 parentDeviceId: user.parentDeviceId,
                 isCurrentUser: user.isCurrentUser,
-                isHost: user.isHost
+                isHost: user.isHost,
+                meetingId: user.meetingId
             });
         }
 
@@ -1395,15 +1398,23 @@ function syncVirtualStreamsFromParticipant(participant) {
     }
 }
 
+function extractCallIdFromEventDataObject(eventDataObject) {
+    return eventDataObject?.headers?.["X-Microsoft-Skype-Chain-ID"];
+}
+
 function handleRosterUpdate(eventDataObject) {
     try {
         const decodedBody = decodeWebSocketBody(eventDataObject.body);
         realConsole?.log('handleRosterUpdate decodedBody', decodedBody);
         // Teams includes a user with no display name. Not sure what this user is but we don't want to sync that user.
         const participants = Object.values(decodedBody.participants).filter(participant => participant.details?.displayName);
-
+        const callId = extractCallIdFromEventDataObject(eventDataObject);
         for (const participant of participants) {
-            window.userManager.singleUserSynced(participant);
+            const participantWithCallId = {
+                ...participant,
+                callId: callId
+            };
+            window.userManager.singleUserSynced(participantWithCallId);
             syncVirtualStreamsFromParticipant(participant);
         }
     } catch (error) {
@@ -2704,6 +2715,8 @@ navigator.mediaDevices.getUserMedia = function(constraints) {
 class CallManager {
     constructor() {
         this.activeCall = null;
+        this.closedCaptionLanguageInterval = null;
+        this.closedCaptionLanguage = null;
     }
 
     setActiveCall() {
@@ -2725,6 +2738,15 @@ class CallManager {
                 }
             }
         }
+    }
+
+    getCallId() {
+        this.setActiveCall();
+        if (!this.activeCall) {
+            return;
+        }
+
+        return this.activeCall._callId;
     }
 
     getCurrentUserId() {
@@ -2779,7 +2801,8 @@ class CallManager {
                 details: {id: participant.id, displayName: participant.displayName},
                 meetingRole: participant.meetingRole,
                 state: "active",
-                endpoints: Object.fromEntries(endpoints)
+                endpoints: Object.fromEntries(endpoints),
+                callId: this.getCallId()
             };
             window.userManager.singleUserSynced(participantConverted);
             syncVirtualStreamsFromParticipant(participantConverted);
@@ -2798,35 +2821,40 @@ class CallManager {
     setClosedCaptionsLanguage(language) {
         this.setActiveCall();
         if (this.activeCall) {
-            this.activeCall.setClosedCaptionsLanguage(language);
+            this.closedCaptionLanguage = language;
+            this.activeCall.setClosedCaptionsLanguage(this.closedCaptionLanguage);
             // Unfortunately, this is needed for improved reliability.
             // It seems like when the host joins at the same time as the bot, they reset the cc language to the default.
             setTimeout(() => {
                 if (this.activeCall) {
-                    this.activeCall.setClosedCaptionsLanguage(language);
+                    this.activeCall.setClosedCaptionsLanguage(this.closedCaptionLanguage);
                 }
             }, 1000);         
             setTimeout(() => {
                 if (this.activeCall) {
-                    this.activeCall.setClosedCaptionsLanguage(language);
+                    this.activeCall.setClosedCaptionsLanguage(this.closedCaptionLanguage);
                 }
             }, 3000);
             setTimeout(() => {
                 if (this.activeCall) {
-                    this.activeCall.setClosedCaptionsLanguage(language);
+                    this.activeCall.setClosedCaptionsLanguage(this.closedCaptionLanguage);
                 }
             }, 5000);
             setTimeout(() => {
                 if (this.activeCall) {
-                    this.activeCall.setClosedCaptionsLanguage(language);
+                    this.activeCall.setClosedCaptionsLanguage(this.closedCaptionLanguage);
                     // Set an interval that runs every 60 seconds and makes sure the current closed caption language is equal to the language
                     // This is for debugging purposes
-                    setInterval(() => {
+
+                    // Only do it if the interval is not already set
+                    if (this.closedCaptionLanguageInterval)
+                        return;
+                    this.closedCaptionLanguageInterval = setInterval(() => {
                         if (this.activeCall && this.activeCall.getClosedCaptionsLanguage) {
-                            if (this.activeCall.getClosedCaptionsLanguage() !== language) {
+                            if (this.activeCall.getClosedCaptionsLanguage() !== this.closedCaptionLanguage) {
                                 window.ws?.sendJson({
                                     type: "closedCaptionsLanguageMismatch",
-                                    desiredLanguage: language,
+                                    desiredLanguage: this.closedCaptionLanguage,
                                     currentLanguage: this.activeCall.getClosedCaptionsLanguage()
                                 });
                             }

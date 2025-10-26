@@ -4,6 +4,8 @@ import logging
 import os
 from dataclasses import asdict
 
+from django.conf import settings
+
 logger = logging.getLogger(__name__)
 
 import jsonschema
@@ -40,6 +42,8 @@ from .models import (
     RecordingTranscriptionStates,
     RecordingViews,
     TranscriptionProviders,
+    ZoomOAuthConnection,
+    ZoomOAuthConnectionStates,
 )
 
 
@@ -250,6 +254,7 @@ TRANSCRIPTION_SETTINGS_SCHEMA = {
                 "language": {"description": "The language code for transcription. Defaults to 'multi' if not specified, which selects the language automatically and can change the detected language in the middle of the audio. See here for available languages: https://developers.deepgram.com/docs/models-languages-overview.", "type": "string"},
                 "model": {"description": "The model to use for transcription. Defaults to 'nova-3' if not specified, which is the recommended model for most use cases. See here for details: https://developers.deepgram.com/docs/models-languages-overview", "type": "string"},
                 "redact": {"type": "array", "items": {"type": "string", "enum": ["pci", "pii", "numbers"]}, "uniqueItems": True, "description": "Array of redaction types to apply to transcription. Automatically removes or masks sensitive information like PII, PCI data, and numbers from transcripts. See here for details: https://developers.deepgram.com/docs/redaction"},
+                "replace": {"type": "array", "items": {"type": "string"}, "description": "Array of terms to find and replace in the transcript. Each string should be in the format 'term_to_find:replacement_term' (e.g., 'kpis:Key Performance Indicators'). See here for details: https://developers.deepgram.com/docs/find-and-replace"},
             },
             "additionalProperties": False,
         },
@@ -444,6 +449,29 @@ class BotImageSerializer(serializers.Serializer):
 
 @extend_schema_field(TRANSCRIPTION_SETTINGS_SCHEMA)
 class TranscriptionSettingsJSONField(serializers.JSONField):
+    pass
+
+
+# Define a subset schema for updating transcription settings (currently only Teams closed captions language)
+PATCH_BOT_TRANSCRIPTION_SETTINGS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "meeting_closed_captions": {
+            "type": "object",
+            "properties": {
+                "teams_language": TRANSCRIPTION_SETTINGS_SCHEMA["properties"]["meeting_closed_captions"]["properties"]["teams_language"],
+            },
+            "required": ["teams_language"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["meeting_closed_captions"],
+    "additionalProperties": False,
+}
+
+
+@extend_schema_field(PATCH_BOT_TRANSCRIPTION_SETTINGS_SCHEMA)
+class PatchBotTranscriptionSettingsJSONField(serializers.JSONField):
     pass
 
 
@@ -1023,10 +1051,6 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
 
         initial_data_with_value = {**self.initial_data, "transcription_settings": value}
 
-        if meeting_type == MeetingTypes.ZOOM and use_zoom_web_adapter:
-            if transcription_provider_from_bot_creation_data(initial_data_with_value) != TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM:
-                raise serializers.ValidationError({"transcription_settings": "API-based transcription is not supported for Zoom when using the web SDK. Please set 'zoom_settings.sdk' to 'native' in the bot creation request."})
-
         if meeting_type == MeetingTypes.ZOOM and not use_zoom_web_adapter:
             if transcription_provider_from_bot_creation_data(initial_data_with_value) == TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM:
                 raise serializers.ValidationError({"transcription_settings": "Closed caption based transcription is not supported for Zoom when using the native SDK. Please set 'zoom_settings.sdk' to 'web' in the bot creation request."})
@@ -1299,9 +1323,9 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
             if not isinstance(key, str):
                 raise serializers.ValidationError("All keys in metadata must be strings")
 
-        # Make sure the total length of the stringified metadata is less than 1000 characters
-        if len(json.dumps(value)) > 1000:
-            raise serializers.ValidationError("Metadata must be less than 1000 characters")
+        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
+        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
+            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
 
         return value
 
@@ -1444,6 +1468,7 @@ class TranscriptUtteranceSerializer(serializers.Serializer):
     speaker_name = serializers.CharField()
     speaker_uuid = serializers.CharField()
     speaker_user_uuid = serializers.CharField(allow_null=True)
+    speaker_is_host = serializers.BooleanField()
     timestamp_ms = serializers.IntegerField()
     duration_ms = serializers.IntegerField()
     transcription = serializers.JSONField()
@@ -1583,6 +1608,25 @@ class ParticipantEventSerializer(serializers.Serializer):
         return ParticipantEventTypes.type_to_api_code(obj.event_type)
 
 
+class PatchBotTranscriptionSettingsSerializer(serializers.Serializer):
+    """Serializer for updating transcription settings. Currently supports only updating Teams closed captions language."""
+
+    transcription_settings = PatchBotTranscriptionSettingsJSONField(help_text="Transcription settings to update. Currently supports only updating Teams closed captions language, e.g. {'meeting_closed_captions': {'teams_language': 'en-us'}}", required=True)
+
+    def validate_transcription_settings(self, value):
+        """Validate the transcription settings against the schema."""
+        try:
+            jsonschema.validate(instance=value, schema=PATCH_BOT_TRANSCRIPTION_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        # Ensure at least one field is provided
+        if not value or not value.get("meeting_closed_captions"):
+            raise serializers.ValidationError("At least one transcription setting must be provided")
+
+        return value
+
+
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
@@ -1639,9 +1683,9 @@ class CreateCalendarSerializer(serializers.Serializer):
             if not isinstance(key, str):
                 raise serializers.ValidationError("All keys in metadata must be strings")
 
-        # Make sure the total length of the stringified metadata is less than 1000 characters
-        if len(json.dumps(value)) > 1000:
-            raise serializers.ValidationError("Metadata must be less than 1000 characters")
+        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
+        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
+            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
 
         return value
 
@@ -1784,9 +1828,9 @@ class PatchCalendarSerializer(serializers.Serializer):
             if not isinstance(key, str):
                 raise serializers.ValidationError("All keys in metadata must be strings")
 
-        # Make sure the total length of the stringified metadata is less than 1000 characters
-        if len(json.dumps(value)) > 1000:
-            raise serializers.ValidationError("Metadata must be less than 1000 characters")
+        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
+        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
+            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
 
         return value
 
@@ -1878,3 +1922,97 @@ class AsyncTranscriptionSerializer(serializers.ModelSerializer):
     def get_state(self, obj):
         """Return the state as an API code"""
         return AsyncTranscriptionStates.state_to_api_code(obj.state)
+
+
+class CreateZoomOAuthConnectionSerializer(serializers.Serializer):
+    zoom_oauth_app_id = serializers.CharField(help_text="The Zoom Oauth App the connection is for")
+    authorization_code = serializers.CharField(help_text="The authorization code received from Zoom during the OAuth flow")
+    redirect_uri = serializers.CharField(help_text="The redirect URI used to obtain the authorization code")
+
+    metadata = serializers.JSONField(help_text="JSON object containing metadata to associate with the Zoom OAuth Connection", required=False, default=None)
+
+    def validate_metadata(self, value):
+        if value is None:
+            return value
+
+        # Check if it's a dict
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("Metadata must be an object not an array or other type")
+
+        # Make sure there is at least one key
+        if not value:
+            raise serializers.ValidationError("Metadata must have at least one key")
+
+        # Check if all values are strings
+        for key, val in value.items():
+            if not isinstance(val, str):
+                raise serializers.ValidationError(f"Value for key '{key}' must be a string")
+
+        # Check if all keys are strings
+        for key in value.keys():
+            if not isinstance(key, str):
+                raise serializers.ValidationError("All keys in metadata must be strings")
+
+        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
+        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
+            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
+
+        return value
+
+    def validate(self, data):
+        """Validate that no unexpected fields are provided."""
+        # Get all the field names defined in this serializer
+        expected_fields = set(self.fields.keys())
+
+        # Get all the fields provided in the input data
+        provided_fields = set(self.initial_data.keys())
+
+        # Check for unexpected fields
+        unexpected_fields = provided_fields - expected_fields
+
+        if unexpected_fields:
+            raise serializers.ValidationError(f"Unexpected field(s): {', '.join(sorted(unexpected_fields))}. Allowed fields are: {', '.join(sorted(expected_fields))}")
+
+        return data
+
+
+class ZoomOAuthConnectionSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source="object_id")
+    state = serializers.SerializerMethodField()
+    metadata = serializers.SerializerMethodField()
+    zoom_oauth_app_id = serializers.CharField(source="zoom_oauth_app.object_id")
+
+    @extend_schema_field(
+        {
+            "type": "string",
+            "enum": ["connected", "disconnected"],
+        }
+    )
+    def get_state(self, obj):
+        """Convert zoom oauth connection state to API code"""
+        mapping = {
+            ZoomOAuthConnectionStates.CONNECTED: "connected",
+            ZoomOAuthConnectionStates.DISCONNECTED: "disconnected",
+        }
+        return mapping.get(obj.state)
+
+    @extend_schema_field({"type": "object", "description": "Metadata associated with the zoom oauth connection"})
+    def get_metadata(self, obj):
+        return obj.metadata
+
+    class Meta:
+        model = ZoomOAuthConnection
+        fields = [
+            "id",
+            "zoom_oauth_app_id",
+            "user_id",
+            "account_id",
+            "state",
+            "metadata",
+            "connection_failure_data",
+            "created_at",
+            "updated_at",
+            "last_successful_sync_at",
+            "last_attempted_sync_at",
+        ]
+        read_only_fields = fields
