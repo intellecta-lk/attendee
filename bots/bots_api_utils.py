@@ -72,12 +72,21 @@ def create_bot_chat_message_request(bot, chat_message_data):
         BotChatMessageRequest: The created chat message request
     """
     try:
+        # Make sure the bot has a participant with the given to_user_uuid
+        to_user_uuid = chat_message_data.get("to_user_uuid")
+        if to_user_uuid:
+            participant = bot.participants.filter(uuid=to_user_uuid).first()
+            if not participant:
+                raise ValidationError(f"No participant found with uuid {to_user_uuid}. Use the /participants endpoint to get the list of participants.", params={"to_user_uuid": to_user_uuid})
+
         bot_chat_message_request = BotChatMessageRequest.objects.create(
             bot=bot,
-            to_user_uuid=chat_message_data.get("to_user_uuid"),
+            to_user_uuid=to_user_uuid,
             to=chat_message_data["to"],
             message=chat_message_data["message"],
         )
+    except ValidationError as e:
+        raise e
     except Exception as e:
         error_message_first_line = str(e).split("\n")[0]
         logging.error(f"Error creating bot chat message request: {error_message_first_line}")
