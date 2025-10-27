@@ -1098,6 +1098,9 @@ class SendChatMessageView(APIView):
 
             return Response(status=status.HTTP_200_OK)
 
+        except ValidationError as e:
+            logging.error(f"Error creating chat message request for bot {bot.object_id}: {str(e)}")
+            return Response({"error": e.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logging.error(f"Error creating chat message request for bot {bot.object_id}: {str(e)}")
             return Response(

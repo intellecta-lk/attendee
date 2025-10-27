@@ -723,7 +723,9 @@ class BotChatMessageRequestSerializer(serializers.Serializer):
         to_user_uuid = data.get("to_user_uuid")
 
         if to_value == BotChatMessageToOptions.SPECIFIC_USER and not to_user_uuid:
-            raise serializers.ValidationError({"to_user_uuid": "This field is required when sending to a specific user."})
+            raise serializers.ValidationError({"to_user_uuid": "This field is required when the 'to' value is 'specific_user'."})
+        if to_value != BotChatMessageToOptions.SPECIFIC_USER and to_user_uuid:
+            raise serializers.ValidationError({"to_user_uuid": "This field should only be provided when the 'to' value is 'specific_user'."})
 
         return data
 
