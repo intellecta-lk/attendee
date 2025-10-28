@@ -99,29 +99,39 @@
                     </div>
                     
                     <div class="mb-3">
-                        <label for="private_key" class="form-label">Private Key</label>
+                        <label for="private_key_file" class="form-label">Private Key</label>
+                        <input type="file" 
+                            class="form-control" 
+                            id="private_key_file" 
+                            accept=".pem,.key,.txt"
+                            required>
+                        <div class="form-text">Upload the private key file for client certificate authentication</div>
                         <textarea 
-                            class="form-control font-monospace" 
+                            class="form-control font-monospace d-none" 
                             id="private_key" 
                             name="private_key" 
-                            rows="6"
-                            required
-                            placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                            style="-webkit-text-security: disc; text-security: disc;"></textarea>
-                        <div class="form-text">The private key for client certificate authentication</div>
+                            required></textarea>
+                        <div id="private_key_preview" class="mt-2 p-2 bg-light border rounded font-monospace small" style="display: none; max-height: 150px; overflow-y: auto;">
+                            <pre id="private_key_preview_content" class="mb-0" style="white-space: pre-wrap; word-break: break-all;"></pre>
+                        </div>
                     </div>
                     
                     <div class="mb-3">
-                        <label for="cert" class="form-label">Certificate</label>
+                        <label for="cert_file" class="form-label">Certificate</label>
+                        <input type="file" 
+                            class="form-control" 
+                            id="cert_file" 
+                            accept=".pem,.crt,.cer,.txt"
+                            required>
+                        <div class="form-text">Upload the client certificate file</div>
                         <textarea 
-                            class="form-control font-monospace" 
+                            class="form-control font-monospace d-none" 
                             id="cert" 
                             name="cert" 
-                            rows="6"
-                            required
-                            placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
-                            style="-webkit-text-security: disc; text-security: disc;"></textarea>
-                        <div class="form-text">The client certificate</div>
+                            required></textarea>
+                        <div id="cert_preview" class="mt-2 p-2 bg-light border rounded font-monospace small" style="display: none; max-height: 150px; overflow-y: auto;">
+                            <pre id="cert_preview_content" class="mb-0" style="white-space: pre-wrap; word-break: break-all;"></pre>
+                        </div>
                     </div>
                     
                     <div class="mt-3">
@@ -144,6 +154,12 @@
         if (form) {
             form.reset();
         }
+        // Clear previews
+        document.getElementById('private_key_preview').style.display = 'none';
+        document.getElementById('cert_preview').style.display = 'none';
+        document.getElementById('private_key').value = '';
+        document.getElementById('cert').value = '';
+        
         const modalElement = document.getElementById('googleMeetBotLoginModal');
         if (modalElement) {
             const modalInstance = bootstrap.Modal.getInstance(modalElement);
@@ -153,6 +169,56 @@
         }
     }
 
+    function getFirstNLines(text, n) {
+        const lines = text.split('\n');
+        const firstLines = lines.slice(0, n);
+        return firstLines.join('\n');
+    }
+
+    // Handle private key file upload
+    document.addEventListener('DOMContentLoaded', function() {
+        const privateKeyFileInput = document.getElementById('private_key_file');
+        if (privateKeyFileInput) {
+            privateKeyFileInput.addEventListener('change', function(event) {
+                const file = event.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const content = e.target.result;
+                        // Store full content in hidden textarea
+                        document.getElementById('private_key').value = content;
+                        // Show preview of first 2 lines
+                        const preview = getFirstNLines(content, 2);
+                        document.getElementById('private_key_preview_content').textContent = preview;
+                        document.getElementById('private_key_preview').style.display = 'block';
+                    };
+                    reader.readAsText(file);
+                }
+            });
+        }
+
+        // Handle certificate file upload
+        const certFileInput = document.getElementById('cert_file');
+        if (certFileInput) {
+            certFileInput.addEventListener('change', function(event) {
+                const file = event.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const content = e.target.result;
+                        // Store full content in hidden textarea
+                        document.getElementById('cert').value = content;
+                        // Show preview of first 2 lines
+                        const preview = getFirstNLines(content, 2);
+                        document.getElementById('cert_preview_content').textContent = preview;
+                        document.getElementById('cert_preview').style.display = 'block';
+                    };
+                    reader.readAsText(file);
+                }
+            });
+        }
+    });
+
     // Clear form when modal is hidden (handles Cancel button and close button)
     const modalElement = document.getElementById('googleMeetBotLoginModal');
     if (modalElement) {
@@ -161,6 +227,11 @@
             if (form) {
                 form.reset();
             }
+            // Clear previews
+            document.getElementById('private_key_preview').style.display = 'none';
+            document.getElementById('cert_preview').style.display = 'none';
+            document.getElementById('private_key').value = '';
+            document.getElementById('cert').value = '';
         });
     }
 </script>
