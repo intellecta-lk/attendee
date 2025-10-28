@@ -5,9 +5,11 @@ import time
 from selenium.common.exceptions import ElementNotInteractableException, NoSuchElementException, TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+from bots.bot_sso_utils import get_google_meet_create_session_url
 from bots.models import RecordingViews
 from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
 
@@ -145,6 +147,10 @@ class GoogleMeetUIMethods:
         self.click_element(camera_button, "turn_off_camera_button")
 
     def fill_out_name_input(self):
+        # No need to fill out the name input if we're using a signed in bot
+        if self.google_meet_bot_login_session:
+            return
+
         num_attempts_to_look_for_name_input = 30
         logger.info("Waiting for the name input field...")
         for attempt_to_look_for_name_input_index in range(num_attempts_to_look_for_name_input):
@@ -433,8 +439,47 @@ class GoogleMeetUIMethods:
         logger.info("Clicking the close button")
         self.click_element(close_button, "close_button")
 
+    def login_to_google_meet_account(self):
+        logger.info("Logging in to Google Meet account")
+        session_id = self.google_meet_bot_login_session.get("session_id")
+        google_meet_create_session_url = get_google_meet_create_session_url(session_id)
+        logger.info(f"Navigating to Google Meet create session URL: {google_meet_create_session_url}")
+        self.driver.get(google_meet_create_session_url)
+        # Then you need to navigate to http://accounts.google.com/
+        logger.info("Navigating to http://accounts.google.com/")
+        self.driver.get("http://accounts.google.com/")
+        # Then you need to fill in the email input
+        logger.info("Filling in the email input...")
+        # Look for input type = email and fill it in
+        time.sleep(1)
+        session_email = self.google_meet_bot_login_session.get("login_email")
+        email_input = self.locate_element(step="email_input_for_google_account_sign_in", condition=EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]')), wait_time_seconds=10)
+        email_input.send_keys(session_email)
+
+        url_before_signin = self.driver.current_url
+        # Press the enter key to submit the email input
+        email_input.send_keys(Keys.ENTER)
+
+        logger.info("Login attempted, waiting for redirect...")
+
+        ## Wait until the url changes to something other than the login page or too much time has passed
+        start_waiting_at = time.time()
+        while self.driver.current_url == url_before_signin:
+            time.sleep(1)
+            if time.time() - start_waiting_at > 60:
+                logger.info("Login timed out, redirecting to meeting page")
+                # TODO Replace with error message for login failed
+                break
+
+        logger.info(f"Redirected to {self.driver.current_url}")
+
+        time.sleep(1)
+
     # returns nothing if succeeded, raises an exception if failed
     def attempt_to_join_meeting(self):
+        if self.google_meet_bot_login_session:
+            self.login_to_google_meet_account()
+
         layout_to_select = self.get_layout_to_select()
 
         self.driver.get(self.meeting_url)

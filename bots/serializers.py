@@ -552,6 +552,31 @@ class MetadataJSONField(serializers.JSONField):
     pass
 
 
+GOOGLE_MEET_SETTINGS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "use_login": {
+            "type": "boolean",
+            "description": "Whether to use Google Meet bot login credentials to sign in before joining the meeting. Requires Google Meet bot login credentials to be set for the project.",
+            "default": False,
+        },
+        "login_mode": {
+            "type": "string",
+            "enum": ["always", "only_if_required"],
+            "description": "The mode to use for the Google Meet bot login. 'always' means the bot will always login, 'only_if_required' means the bot will only login if the meeting requires authentication.",
+            "default": "always",
+        },
+    },
+    "required": [],
+    "additionalProperties": False,
+}
+
+
+@extend_schema_field(GOOGLE_MEET_SETTINGS_SCHEMA)
+class GoogleMeetSettingsJSONField(serializers.JSONField):
+    pass
+
+
 @extend_schema_field(
     {
         "type": "object",
@@ -1190,6 +1215,32 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
         view = value.get("view")
         if view not in [RecordingViews.SPEAKER_VIEW, RecordingViews.GALLERY_VIEW, RecordingViews.SPEAKER_VIEW_NO_SIDEBAR, None]:
             raise serializers.ValidationError({"view": "View must be speaker_view or gallery_view or speaker_view_no_sidebar"})
+
+        return value
+
+    google_meet_settings = GoogleMeetSettingsJSONField(
+        help_text="The Google Meet-specific settings for the bot.",
+        required=False,
+        default={"use_login": False, "login_mode": "always"},
+    )
+
+    def validate_google_meet_settings(self, value):
+        if value is None:
+            return value
+
+        # Define defaults
+        defaults = {"use_login": False, "login_mode": "always"}
+
+        try:
+            jsonschema.validate(instance=value, schema=GOOGLE_MEET_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        # If at least one attribute is provided, apply defaults for any missing attributes
+        if value:
+            for key, default_value in defaults.items():
+                if key not in value:
+                    value[key] = default_value
 
         return value
 

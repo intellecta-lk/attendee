@@ -14,10 +14,12 @@ class GoogleMeetBotAdapter(WebBotAdapter, GoogleMeetUIMethods):
         self,
         *args,
         google_meet_closed_captions_language: str | None,
+        google_meet_bot_login_session: dict | None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.google_meet_closed_captions_language = google_meet_closed_captions_language
+        self.google_meet_bot_login_session = google_meet_bot_login_session
 
     def get_chromedriver_payload_file_name(self):
         return "google_meet_bot_adapter/google_meet_chromedriver_payload.js"

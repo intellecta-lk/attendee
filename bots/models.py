@@ -58,6 +58,7 @@ class Project(models.Model):
     def __str__(self):
         return self.name
 
+
 class GoogleMeetBotLoginGroup(models.Model):
     OBJECT_ID_PREFIX = "gbg_"
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="google_meet_bot_login_groups")
@@ -94,7 +95,15 @@ class GoogleMeetBotLogin(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
-    
+
+    @property
+    def cert(self):
+        return self.get_credentials().get("cert")
+
+    @property
+    def private_key(self):
+        return self.get_credentials().get("private_key")
+
     def set_credentials(self, credentials_dict):
         """Encrypt and save credentials"""
         f = Fernet(settings.CREDENTIALS_ENCRYPTION_KEY)
@@ -125,6 +134,7 @@ class GoogleMeetBotLogin(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["group", "email"], name="unique_google_meet_bot_login_email"),
         ]
+
 
 class ZoomOAuthApp(models.Model):
     OBJECT_ID_PREFIX = "zoa_"
@@ -747,6 +757,12 @@ class Bot(models.Model):
     @property
     def transcription_settings(self):
         return TranscriptionSettings(self.settings.get("transcription_settings"))
+
+    def google_meet_use_bot_login(self):
+        return self.settings.get("google_meet_settings", {}).get("use_login", False)
+
+    def google_meet_login_mode_is_always(self):
+        return self.settings.get("google_meet_settings", {}).get("login_mode", "always") == "always"
 
     def teams_use_bot_login(self):
         return self.settings.get("teams_settings", {}).get("use_login", False)
