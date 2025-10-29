@@ -458,6 +458,32 @@ class GoogleMeetUIMethods:
         logger.info("Clicking the close button")
         self.click_element(close_button, "close_button")
 
+    def wait_until_url_has_stopped_changing(self, stable_for: float = 1.0, timeout: float = 30.0, poll: float = 0.1) -> bool:
+        """
+        Wait until the browser URL remains unchanged for at least `stable_for` seconds.
+        Returns True if stability was achieved before `timeout`, else False.
+        """
+        last_url = self.driver.current_url
+        last_change = time.monotonic()
+        deadline = last_change + timeout
+
+        while time.monotonic() < deadline:
+            current_url = self.driver.current_url
+            if current_url != last_url:
+                # URL changed; reset the stability timer
+                last_url = current_url
+                last_change = time.monotonic()
+
+            # Has the URL been stable long enough?
+            if (time.monotonic() - last_change) >= stable_for:
+                logger.info("URL has not changed for %.2f seconds, returning (url=%s)", stable_for, current_url)
+                return True
+
+            time.sleep(poll)
+
+        logger.info("Timed out waiting for URL stability (>%.2fs). Last URL: %s", stable_for, last_url)
+        return False
+
     def login_to_google_meet_account(self):
         self.google_meet_bot_login_session = self.create_google_meet_bot_login_session_callback()
         logger.info("Logging in to Google Meet account")
@@ -468,10 +494,10 @@ class GoogleMeetUIMethods:
         # Then you need to navigate to http://accounts.google.com/
         logger.info("Navigating to http://accounts.google.com/")
         self.driver.get("http://accounts.google.com/")
+
         # Then you need to fill in the email input
         logger.info("Filling in the email input...")
         # Look for input type = email and fill it in
-        time.sleep(1)
         session_email = self.google_meet_bot_login_session.get("login_email")
         email_input = self.locate_element(step="email_input_for_google_account_sign_in", condition=EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="email"]')), wait_time_seconds=10)
         email_input.send_keys(session_email)
@@ -481,6 +507,7 @@ class GoogleMeetUIMethods:
         email_input.send_keys(Keys.ENTER)
 
         logger.info("Login attempted, waiting for redirect...")
+        logger.info(f"Current URL: {self.driver.current_url}")
 
         ## Wait until the url changes to something other than the login page or too much time has passed
         start_waiting_at = time.time()
@@ -492,8 +519,8 @@ class GoogleMeetUIMethods:
                 break
 
         logger.info(f"Redirected to {self.driver.current_url}")
-
-        time.sleep(1)
+        self.wait_until_url_has_stopped_changing(stable_for=1.0)
+        logger.info(f"stabilized to {self.driver.current_url}")
 
     # returns nothing if succeeded, raises an exception if failed
     def attempt_to_join_meeting(self):
