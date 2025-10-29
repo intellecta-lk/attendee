@@ -443,6 +443,9 @@ class WebBotAdapter(BotAdapter):
             }
         )
 
+    def add_subclass_specific_chrome_options(self, options):
+        pass
+
     def init_driver(self):
         options = webdriver.ChromeOptions()
 
@@ -451,7 +454,6 @@ class WebBotAdapter(BotAdapter):
         options.add_argument("--use-fake-ui-for-media-stream")
         options.add_argument(f"--window-size={self.video_frame_size[0]},{self.video_frame_size[1]}")
         options.add_argument("--start-fullscreen")
-        options.add_argument("--guest")
         # options.add_argument('--headless=new')
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
@@ -472,6 +474,8 @@ class WebBotAdapter(BotAdapter):
             "profile.password_manager_enabled": False,
         }
         options.add_experimental_option("prefs", prefs)
+
+        self.add_subclass_specific_chrome_options(options)
 
         if self.driver:
             # Simulate closing browser window

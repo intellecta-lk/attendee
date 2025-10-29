@@ -66,3 +66,7 @@ class GoogleMeetBotAdapter(WebBotAdapter, GoogleMeetUIMethods):
 
     def subclass_specific_after_bot_joined_meeting(self):
         self.after_bot_can_record_meeting()
+
+    def add_subclass_specific_chrome_options(self, options):
+        if self.google_meet_bot_login_should_be_used:
+            options.add_argument("--guest")
