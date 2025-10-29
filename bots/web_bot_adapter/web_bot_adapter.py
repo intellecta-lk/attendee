@@ -543,6 +543,9 @@ class WebBotAdapter(BotAdapter):
         repeatedly_attempt_to_join_meeting_thread = threading.Thread(target=self.repeatedly_attempt_to_join_meeting, daemon=True)
         repeatedly_attempt_to_join_meeting_thread.start()
 
+    def should_retry_joining_meeting_that_requires_login_by_logging_in(self):
+        return False
+
     def repeatedly_attempt_to_join_meeting(self):
         logger.info(f"Trying to join meeting at {self.meeting_url}")
 
@@ -558,8 +561,9 @@ class WebBotAdapter(BotAdapter):
                 break
 
             except UiLoginRequiredException:
-                self.send_login_required_message()
-                return
+                if not self.should_retry_joining_meeting_that_requires_login_by_logging_in():
+                    self.send_login_required_message()
+                    return
 
             except UiLoginAttemptFailedException:
                 self.send_login_attempt_failed_message()

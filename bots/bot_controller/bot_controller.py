@@ -37,6 +37,7 @@ from bots.models import (
     ChatMessage,
     ChatMessageToOptions,
     Credentials,
+    GoogleMeetBotLogin,
     GoogleMeetBotLoginGroup,
     MeetingTypes,
     Participant,
@@ -98,7 +99,7 @@ class BotController:
     def disable_incoming_video_for_web_bots(self):
         return not (self.pipeline_configuration.record_video or self.pipeline_configuration.rtmp_stream_video)
 
-    def get_google_meet_bot_login_session(self):
+    def create_google_meet_bot_login_session(self):
         if not self.bot_in_db.google_meet_use_bot_login():
             return None
         first_google_meet_bot_login_group = GoogleMeetBotLoginGroup.objects.filter(project=self.bot_in_db.project).first()
@@ -115,6 +116,9 @@ class BotController:
             "login_email": least_used_google_meet_bot_login.email,
         }
 
+    def google_meet_bot_login_is_available(self):
+        return self.bot_in_db.google_meet_use_bot_login() and GoogleMeetBotLogin.objects.filter(group__project=self.bot_in_db.project).exists()
+
     def get_google_meet_bot_adapter(self):
         from bots.google_meet_bot_adapter import GoogleMeetBotAdapter
 
@@ -122,8 +126,6 @@ class BotController:
             add_audio_chunk_callback = self.per_participant_audio_input_manager().add_chunk
         else:
             add_audio_chunk_callback = None
-
-        google_meet_bot_login_session = self.get_google_meet_bot_login_session()
 
         return GoogleMeetBotAdapter(
             display_name=self.bot_in_db.name,
@@ -148,7 +150,9 @@ class BotController:
             video_frame_size=self.bot_in_db.recording_dimensions(),
             record_chat_messages_when_paused=self.bot_in_db.record_chat_messages_when_paused(),
             disable_incoming_video=self.disable_incoming_video_for_web_bots(),
-            google_meet_bot_login_session=google_meet_bot_login_session,
+            google_meet_bot_login_is_available=self.google_meet_bot_login_is_available(),
+            google_meet_bot_login_should_be_used=self.bot_in_db.google_meet_login_mode_is_always(),
+            create_google_meet_bot_login_session_callback=self.create_google_meet_bot_login_session,
         )
 
     def get_teams_bot_adapter(self):

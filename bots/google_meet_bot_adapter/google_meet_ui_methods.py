@@ -440,6 +440,7 @@ class GoogleMeetUIMethods:
         self.click_element(close_button, "close_button")
 
     def login_to_google_meet_account(self):
+        self.google_meet_bot_login_session = self.create_google_meet_bot_login_session_callback()
         logger.info("Logging in to Google Meet account")
         session_id = self.google_meet_bot_login_session.get("session_id")
         google_meet_create_session_url = get_google_meet_create_session_url(session_id)
@@ -477,7 +478,7 @@ class GoogleMeetUIMethods:
 
     # returns nothing if succeeded, raises an exception if failed
     def attempt_to_join_meeting(self):
-        if self.google_meet_bot_login_session:
+        if self.google_meet_bot_login_is_available and self.google_meet_bot_login_should_be_used:
             self.login_to_google_meet_account()
 
         layout_to_select = self.get_layout_to_select()
