@@ -2199,6 +2199,30 @@ components:
             resolution: 1080p
             record_chat_messages_when_paused: false
           description: The settings for the bot's recording.
+        google_meet_settings:
+          type: object
+          properties:
+            use_login:
+              type: boolean
+              description: Whether to use Google Meet bot login credentials to sign
+                in before joining the meeting. Requires Google Meet bot login credentials
+                to be set for the project.
+              default: false
+            login_mode:
+              type: string
+              enum:
+              - always
+              - only_if_required
+              description: The mode to use for the Google Meet bot login. 'always'
+                means the bot will always login, 'only_if_required' means the bot
+                will only login if the meeting requires authentication.
+              default: always
+          required: []
+          additionalProperties: false
+          default:
+            use_login: false
+            login_mode: always
+          description: The Google Meet-specific settings for the bot.
         teams_settings:
           type: object
           properties:
