@@ -1,4 +1,5 @@
 import base64
+import html
 import json
 import logging
 import os
@@ -178,7 +179,7 @@ def _build_idp_server(sp_entity_id: str, acs_url: str, cert_file: str, key_file:
 
 def _html_auto_post_form(action_url: str, saml_response_b64: str, relay_state: str | None) -> str:
     """Return a minimal HTML page that auto-POSTs SAMLResponse (+ RelayState if present) to the ACS."""
-    rs_input = f'<input type="hidden" name="RelayState" value="{relay_state}"/>' if relay_state is not None else ""
+    rs_input = f'<input type="hidden" name="RelayState" value="{html.escape(str(relay_state), quote=True)}"/>' if relay_state is not None else ""
     return f"""<!DOCTYPE html>
 <html>
   <head>
