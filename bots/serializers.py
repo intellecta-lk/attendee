@@ -374,6 +374,35 @@ TRANSCRIPTION_SETTINGS_SCHEMA = {
 }
 
 
+def _validate_metadata_attribute(value):
+    if value is None:
+        return value
+
+    # Check if it's a dict
+    if not isinstance(value, dict):
+        raise serializers.ValidationError("Metadata must be an object not an array or other type")
+
+    # Make sure there is at least one key
+    if not value:
+        raise serializers.ValidationError("Metadata must have at least one key")
+
+    # Check if all values are strings
+    for key, val in value.items():
+        if not isinstance(val, str):
+            raise serializers.ValidationError(f"Value for key '{key}' must be a string")
+
+    # Check if all keys are strings
+    for key in value.keys():
+        if not isinstance(key, str):
+            raise serializers.ValidationError("All keys in metadata must be strings")
+
+    # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
+    if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
+        raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
+
+    return value
+
+
 class BotValidationMixin:
     """Mixin class providing meeting URL validation for serializers."""
 
@@ -1355,32 +1384,7 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
         return value
 
     def validate_metadata(self, value):
-        if value is None:
-            return value
-
-        # Check if it's a dict
-        if not isinstance(value, dict):
-            raise serializers.ValidationError("Metadata must be an object not an array or other type")
-
-        # Make sure there is at least one key
-        if not value:
-            raise serializers.ValidationError("Metadata must have at least one key")
-
-        # Check if all values are strings
-        for key, val in value.items():
-            if not isinstance(val, str):
-                raise serializers.ValidationError(f"Value for key '{key}' must be a string")
-
-        # Check if all keys are strings
-        for key in value.keys():
-            if not isinstance(key, str):
-                raise serializers.ValidationError("All keys in metadata must be strings")
-
-        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
-        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
-            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
-
-        return value
+        return _validate_metadata_attribute(value)
 
     automatic_leave_settings = AutomaticLeaveSettingsJSONField(default=dict, required=False)
 
@@ -1694,6 +1698,10 @@ class PatchBotTranscriptionSettingsSerializer(serializers.Serializer):
 class PatchBotSerializer(BotValidationMixin, serializers.Serializer):
     join_at = serializers.DateTimeField(help_text="The time the bot should join the meeting. ISO 8601 format, e.g. 2025-06-13T12:00:00Z", required=False)
     meeting_url = serializers.CharField(help_text="The URL of the meeting to join, e.g. https://zoom.us/j/123?pwd=456", required=False)
+    metadata = serializers.JSONField(help_text="JSON object containing metadata to associate with the bot", required=False)
+
+    def validate_metadata(self, value):
+        return _validate_metadata_attribute(value)
 
 
 @extend_schema_serializer(
@@ -1715,32 +1723,7 @@ class CreateCalendarSerializer(serializers.Serializer):
     deduplication_key = serializers.CharField(help_text="Optional key for deduplicating calendars. If a calendar with this key already exists in the project, the new calendar will not be created and an error will be returned.", required=False, default=None)
 
     def validate_metadata(self, value):
-        if value is None:
-            return value
-
-        # Check if it's a dict
-        if not isinstance(value, dict):
-            raise serializers.ValidationError("Metadata must be an object not an array or other type")
-
-        # Make sure there is at least one key
-        if not value:
-            raise serializers.ValidationError("Metadata must have at least one key")
-
-        # Check if all values are strings
-        for key, val in value.items():
-            if not isinstance(val, str):
-                raise serializers.ValidationError(f"Value for key '{key}' must be a string")
-
-        # Check if all keys are strings
-        for key in value.keys():
-            if not isinstance(key, str):
-                raise serializers.ValidationError("All keys in metadata must be strings")
-
-        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
-        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
-            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
-
-        return value
+        return _validate_metadata_attribute(value)
 
     def validate_deduplication_key(self, value):
         if value is not None and len(value.strip()) == 0:
@@ -1860,32 +1843,7 @@ class PatchCalendarSerializer(serializers.Serializer):
         return value
 
     def validate_metadata(self, value):
-        if value is None:
-            return value
-
-        # Check if it's a dict
-        if not isinstance(value, dict):
-            raise serializers.ValidationError("Metadata must be an object not an array or other type")
-
-        # Make sure there is at least one key
-        if not value:
-            raise serializers.ValidationError("Metadata must have at least one key")
-
-        # Check if all values are strings
-        for key, val in value.items():
-            if not isinstance(val, str):
-                raise serializers.ValidationError(f"Value for key '{key}' must be a string")
-
-        # Check if all keys are strings
-        for key in value.keys():
-            if not isinstance(key, str):
-                raise serializers.ValidationError("All keys in metadata must be strings")
-
-        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
-        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
-            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
-
-        return value
+        return _validate_metadata_attribute(value)
 
     def validate(self, data):
         """Validate that no unexpected fields are provided."""
@@ -1985,32 +1943,7 @@ class CreateZoomOAuthConnectionSerializer(serializers.Serializer):
     metadata = serializers.JSONField(help_text="JSON object containing metadata to associate with the Zoom OAuth Connection", required=False, default=None)
 
     def validate_metadata(self, value):
-        if value is None:
-            return value
-
-        # Check if it's a dict
-        if not isinstance(value, dict):
-            raise serializers.ValidationError("Metadata must be an object not an array or other type")
-
-        # Make sure there is at least one key
-        if not value:
-            raise serializers.ValidationError("Metadata must have at least one key")
-
-        # Check if all values are strings
-        for key, val in value.items():
-            if not isinstance(val, str):
-                raise serializers.ValidationError(f"Value for key '{key}' must be a string")
-
-        # Check if all keys are strings
-        for key in value.keys():
-            if not isinstance(key, str):
-                raise serializers.ValidationError("All keys in metadata must be strings")
-
-        # Make sure the total length of the stringified metadata is less than MAX_METADATA_LENGTH characters
-        if len(json.dumps(value)) > settings.MAX_METADATA_LENGTH:
-            raise serializers.ValidationError(f"Metadata must be less than {settings.MAX_METADATA_LENGTH} characters")
-
-        return value
+        return _validate_metadata_attribute(value)
 
     def validate(self, data):
         """Validate that no unexpected fields are provided."""
