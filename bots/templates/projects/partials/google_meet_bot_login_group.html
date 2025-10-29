@@ -73,6 +73,7 @@
                     hx-select="#google-meet-bot-login-container"
                     hx-swap="outerHTML"
                     hx-on::after-request="clearGoogleMeetBotLoginForm()"
+                    onsubmit="return validateGoogleMeetBotLoginForm()"
                 >
                     {% csrf_token %}
                     
@@ -109,8 +110,7 @@
                         <textarea 
                             class="form-control font-monospace d-none" 
                             id="private_key" 
-                            name="private_key" 
-                            required></textarea>
+                            name="private_key"></textarea>
                         <div id="private_key_preview" class="mt-2 p-2 bg-light border rounded font-monospace small" style="display: none; max-height: 150px; overflow-y: auto;">
                             <pre id="private_key_preview_content" class="mb-0" style="white-space: pre-wrap; word-break: break-all;"></pre>
                         </div>
@@ -127,8 +127,7 @@
                         <textarea 
                             class="form-control font-monospace d-none" 
                             id="cert" 
-                            name="cert" 
-                            required></textarea>
+                            name="cert"></textarea>
                         <div id="cert_preview" class="mt-2 p-2 bg-light border rounded font-monospace small" style="display: none; max-height: 150px; overflow-y: auto;">
                             <pre id="cert_preview_content" class="mb-0" style="white-space: pre-wrap; word-break: break-all;"></pre>
                         </div>
@@ -149,6 +148,25 @@
 </div>
 
 <script>
+    function validateGoogleMeetBotLoginForm() {
+        const privateKey = document.getElementById('private_key').value;
+        const cert = document.getElementById('cert').value;
+        
+        if (!privateKey || privateKey.trim() === '') {
+            alert('Please upload a private key file.');
+            document.getElementById('private_key_file').focus();
+            return false;
+        }
+        
+        if (!cert || cert.trim() === '') {
+            alert('Please upload a certificate file.');
+            document.getElementById('cert_file').focus();
+            return false;
+        }
+        
+        return true;
+    }
+
     function clearGoogleMeetBotLoginForm() {
         const form = document.getElementById('google-meet-bot-login-form');
         if (form) {
