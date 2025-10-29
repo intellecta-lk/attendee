@@ -882,15 +882,15 @@ class BotDetailView(APIView):
 
     @extend_schema(
         operation_id="Patch Bot",
-        summary="Update a scheduled bot",
-        description="Updates a scheduled bot. Currently only the join_at field can be updated, and only for bots in the scheduled state.",
+        summary="Update a bot",
+        description="Updates a bot. The join_at and meeting_url fields can only be updated when the bot is in the scheduled state.",
         request=PatchBotSerializer,
         responses={
             200: OpenApiResponse(
                 response=BotSerializer,
                 description="Bot updated successfully",
             ),
-            400: OpenApiResponse(description="Invalid input or bot is not in scheduled state"),
+            400: OpenApiResponse(description="Invalid input or bot cannot be updated"),
             404: OpenApiResponse(description="Bot not found"),
         },
         parameters=[

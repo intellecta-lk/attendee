@@ -336,9 +336,6 @@ def patch_bot(bot: Bot, data: dict) -> tuple[Bot | None, dict | None]:
     Returns:
         tuple: (updated_bot, error) where one is None
     """
-    # Check if bot is in scheduled state
-    if bot.state != BotStates.SCHEDULED:
-        return None, {"error": f"Bot is in state {BotStates.state_to_api_code(bot.state)} but can only be updated when in scheduled state"}
 
     # Validate the request data
     serializer = PatchBotSerializer(data=data)
@@ -349,8 +346,17 @@ def patch_bot(bot: Bot, data: dict) -> tuple[Bot | None, dict | None]:
 
     try:
         # Update the bot
+        previous_join_at = bot.join_at
         bot.join_at = validated_data.get("join_at", bot.join_at)
+        previous_meeting_url = bot.meeting_url
         bot.meeting_url = validated_data.get("meeting_url", bot.meeting_url)
+        bot.metadata = validated_data.get("metadata", bot.metadata)
+
+        # If the join_at or meeting_url is being updated, the state must be scheduled. If it isn't error out.
+        update_only_legal_for_scheduled_bots = bot.join_at != previous_join_at or bot.meeting_url != previous_meeting_url
+        if update_only_legal_for_scheduled_bots and bot.state != BotStates.SCHEDULED:
+            return None, {"error": f"Bot is in state {BotStates.state_to_api_code(bot.state)} but the join_at or meeting_url can only be updated when in the scheduled state"}
+
         bot.save()
 
         return bot, None
