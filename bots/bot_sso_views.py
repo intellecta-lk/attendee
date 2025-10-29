@@ -71,3 +71,15 @@ class GoogleMeetSignInView(View):
         # 6) Return auto-posting HTML to the ACS
         html = _html_auto_post_form(acs_url, saml_response_b64, relay_state)
         return HttpResponse(html, content_type="text/html")
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class GoogleMeetSignOutView(View):
+    """
+    GET endpoint that receives a SAML LogoutRequest via HTTP-Redirect binding
+    """
+
+    def get(self, request):
+        logger.info("GoogleMeetSignOutView GET request received")
+        # For now, we'll do nothing here. In the future may be useful keeping track of active sessions more rigorously.
+        return HttpResponse("Signed Out Successfully")

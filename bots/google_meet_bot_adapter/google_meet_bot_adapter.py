@@ -70,3 +70,11 @@ class GoogleMeetBotAdapter(WebBotAdapter, GoogleMeetUIMethods):
     def add_subclass_specific_chrome_options(self, options):
         if self.google_meet_bot_login_should_be_used:
             options.add_argument("--guest")
+
+    def subclass_specific_before_driver_close(self):
+        if self.google_meet_bot_login_session:
+            logger.info("Navigating to the logout page to sign out of the Google account")
+            try:
+                self.driver.get("https://www.google.com/accounts/logout")
+            except Exception as e:
+                logger.info(f"Error navigating to the logout page to sign out of the Google account: {e}")

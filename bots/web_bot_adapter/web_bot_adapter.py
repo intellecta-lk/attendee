@@ -716,6 +716,7 @@ class WebBotAdapter(BotAdapter):
             if self.driver:
                 # Simulate closing browser window
                 try:
+                    self.subclass_specific_before_driver_close()
                     self.driver.close()
                 except Exception as e:
                     logger.info(f"Error closing driver: {e}")
@@ -886,4 +887,8 @@ class WebBotAdapter(BotAdapter):
 
     # Sub-classes can override this to handle class-specific failed to join issues
     def subclass_specific_handle_failed_to_join(self, reason):
+        pass
+
+    # Sub-classes can override this to add class-specific before driver close code
+    def subclass_specific_before_driver_close(self):
         pass
