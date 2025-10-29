@@ -11,7 +11,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from bots.bot_sso_utils import get_google_meet_create_session_url
 from bots.models import RecordingViews
-from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
+from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiLoginAttemptFailedException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
 
 logger = logging.getLogger(__name__)
 
@@ -473,6 +473,12 @@ class GoogleMeetUIMethods:
                 break
 
         logger.info(f"Redirected to {self.driver.current_url}")
+
+        # If we see the couldn't find your account error, then we should raise an exception
+        could_not_find_your_account_element = self.find_element_by_selector(By.XPATH, '//*[contains(text(), "Couldn’t find your Google Account")]')
+        if could_not_find_your_account_element:
+            logger.info("Couldn't find your Google Account message found. Raising UiLoginAttemptFailedException")
+            raise UiLoginAttemptFailedException("Couldn't find your Google Account", "login_to_google_meet_account")
 
         time.sleep(1)
 
