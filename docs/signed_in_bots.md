@@ -58,7 +58,7 @@ We support signed-in bots for Google Meet. You'll need to create a new Google Wo
 
 Here are the steps to set it up:
 
-### Create a new Google Workspace account for the bot
+#### Create a new Google Workspace account for the bot
 1. Create a new Google Workspace account for the bot to use. The workspace will need to be on a paid plan and be associated with a domain you own. This can be a subdomain of your main workspace account's domain.
 2. Navigate to the Admin Console, then to Security -> Set up single sign-on (SSO) with a third party IdP.
 3. On the SSO page, click the "Add SAML Profile" button.
@@ -69,8 +69,8 @@ Here are the steps to set it up:
     ```
 6. In the Legacy SSO profile page, enter the following information:
     - Enable legacy SSO profile - Yes
-    - Sign-in URL - https://app.attendee.com/bot_sso/google_meet_sign_in
-    - Sign-out URL - https://app.attendee.com/bot_sso/google_meet_sign_out
+    - Sign-in URL - https://app.attendee.dev/bot_sso/google_meet_sign_in
+    - Sign-out URL - https://app.attendee.dev/bot_sso/google_meet_sign_out
     - Use a domain-specific issuer - Yes
     - Certificate - Upload the cert.pem file you generated in the previous step
 7. Click the "Save" button.
@@ -79,13 +79,13 @@ Here are the steps to set it up:
 10. Select the Legacy SSO profile you created in the previous step and click the "Save" button.
 11. Add another user to the workspace that the bot will use to sign in. The name of this user should be the name of the bot.
 
-### Create a new Google Meet bot login for your Attendee project
+#### Create a new Google Meet bot login for your Attendee project
 1. Navigate to the Settings -> Credentials page in the Attendee dashboard.
 2. Scroll down to the Google Meet Bot Logins section and click the "Add Login" button.
 3. Enter the requested information. For private key and certificate, you can upload the key.pem and cert.pem files you generated previously. The email must match the email of the bot user in your Google Workspace account. The certificate must match the certificate you added when creating the Legacy SSO profile.
 
-### Configure bots to use the Google Meet bot login
+#### Configure bots to use the Google Meet bot login
 You need to pass the following parameter to the create bot endpoint to activate the Google Meet bot login: `"google_meet_settings": {"use_login": true}`. There is also an optional parameter called `login_mode` that can be set to `"only_if_required"` to only login if the meeting requires authentication. The default is `"always"`, which means the bot will always login.
 
-### How many Google Meet bot logins should I create?
+#### How many Google Meet bot logins should I create?
 Google has concurrency limits for the number of meetings a single account can have open at once. To avoid running into these limits, you can create multiple Google Meet bot logins and we will assign the logins to the bots in a round-robin fashion. The recommended number of logins is MAX_NUMBER_OF_CONCURRENT_MEETINGS / 20. For example, if your application peaks at 100 concurrent meetings, you should create 5 Google Meet bot logins.
