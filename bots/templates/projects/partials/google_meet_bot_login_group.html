@@ -193,8 +193,7 @@
         return firstLines.join('\n');
     }
 
-    // Handle private key file upload
-    document.addEventListener('DOMContentLoaded', function() {
+    function initializeGoogleMeetBotLoginForm() {
         const privateKeyFileInput = document.getElementById('private_key_file');
         if (privateKeyFileInput) {
             privateKeyFileInput.addEventListener('change', function(event) {
@@ -235,6 +234,16 @@
                 }
             });
         }
+    }
+
+    // Handle private key file upload
+    document.addEventListener('DOMContentLoaded', function() {
+        initializeGoogleMeetBotLoginForm();
+    });
+
+    // Call when HTMX content is loaded
+    document.addEventListener('htmx:afterSwap', function() {
+        initializeGoogleMeetBotLoginForm();
     });
 
     // Clear form when modal is hidden (handles Cancel button and close button)
