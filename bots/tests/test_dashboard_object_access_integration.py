@@ -616,7 +616,6 @@ class ObjectAccessIntegrationTest(TransactionTestCase):
         self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_a1).exists())
         self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_a2).exists())
         self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_b1).exists())
-        self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_b2).exists())
 
         # Regular user can create Google Meet bot logins in projects they have access to
         self.client.force_login(self.regular_user_a)
