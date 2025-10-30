@@ -161,12 +161,15 @@ class GoogleMeetUIMethods:
             return True
         return False
 
+    def retrieve_name_input_element(self):
+        return WebDriverWait(self.driver, 1).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="text"][aria-label="Your name"]')))
+
     def fill_out_name_input(self):
         num_attempts_to_look_for_name_input = 30
         logger.info("Waiting for the name input field...")
         for attempt_to_look_for_name_input_index in range(num_attempts_to_look_for_name_input):
             try:
-                name_input = WebDriverWait(self.driver, 1).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="text"][aria-label="Your name"]')))
+                name_input = self.retrieve_name_input_element()
                 self.check_for_failed_logged_in_bot_attempt()
                 logger.info("name input found")
                 name_input.send_keys(self.display_name)
@@ -174,7 +177,6 @@ class GoogleMeetUIMethods:
             except TimeoutException as e:
                 self.look_for_blocked_element("name_input")
                 self.look_for_login_required_element("name_input")
-
                 if self.google_meet_bot_login_session and self.join_now_button_is_present():
                     logger.info("This is a signed in bot and name input is not present but the join now button is present. Assuming name input is not present because we don't need to fill it out, so returning.")
                     return
