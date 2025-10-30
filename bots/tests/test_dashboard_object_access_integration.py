@@ -611,6 +611,13 @@ class ObjectAccessIntegrationTest(TransactionTestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+        # Assert that expected objects in the database are created
+        self.assertTrue(GoogleMeetBotLoginGroup.objects.filter(project=self.project_a1).exists())
+        self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_a1).exists())
+        self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_a2).exists())
+        self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_b1).exists())
+        self.assertTrue(GoogleMeetBotLogin.objects.filter(group=self.google_meet_bot_login_group_b2).exists())
+
         # Regular user can create Google Meet bot logins in projects they have access to
         self.client.force_login(self.regular_user_a)
         response = self.client.post(

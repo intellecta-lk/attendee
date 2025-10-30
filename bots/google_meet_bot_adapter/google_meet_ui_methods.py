@@ -9,7 +9,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from bots.bot_sso_utils import get_google_meet_create_session_url
+from bots.bot_sso_utils import get_google_meet_set_cookie_url
 from bots.models import RecordingViews
 from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginAttemptFailedException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
 
@@ -488,9 +488,9 @@ class GoogleMeetUIMethods:
         self.google_meet_bot_login_session = self.create_google_meet_bot_login_session_callback()
         logger.info("Logging in to Google Meet account")
         session_id = self.google_meet_bot_login_session.get("session_id")
-        google_meet_create_session_url = get_google_meet_create_session_url(session_id)
-        logger.info(f"Navigating to Google Meet create session URL: {google_meet_create_session_url}")
-        self.driver.get(google_meet_create_session_url)
+        google_meet_set_cookie_url = get_google_meet_set_cookie_url(session_id)
+        logger.info(f"Navigating to Google Meet set cookie URL: {google_meet_set_cookie_url}")
+        self.driver.get(google_meet_set_cookie_url)
         # Then you need to navigate to http://accounts.google.com/
         logger.info("Navigating to http://accounts.google.com/")
         self.driver.get("http://accounts.google.com/")
