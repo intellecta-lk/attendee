@@ -76,6 +76,6 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
-        "xmlschema.resources": {"level": "WARNING", "handlers": ["console"], "propagate": False},
+        "xmlschema": {"level": "WARNING", "handlers": ["console"], "propagate": False},
     },
 }
