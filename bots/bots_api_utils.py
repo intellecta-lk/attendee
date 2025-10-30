@@ -207,6 +207,7 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
     recording_settings = serializer.validated_data["recording_settings"]
     debug_settings = serializer.validated_data["debug_settings"]
     automatic_leave_settings = serializer.validated_data["automatic_leave_settings"]
+    google_meet_settings = serializer.validated_data["google_meet_settings"]
     teams_settings = serializer.validated_data["teams_settings"]
     zoom_settings = serializer.validated_data["zoom_settings"]
     bot_image = serializer.validated_data["bot_image"]
@@ -235,6 +236,7 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
         "recording_settings": recording_settings,
         "debug_settings": debug_settings,
         "automatic_leave_settings": automatic_leave_settings,
+        "google_meet_settings": google_meet_settings,
         "teams_settings": teams_settings,
         "zoom_settings": zoom_settings,
         "websocket_settings": websocket_settings,
