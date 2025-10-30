@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_google_meet_create_session_url(session_id):
-    base_url = build_site_url(reverse("bot_sso:google_meet_create_session"))
+    base_url = build_site_url(reverse("bot_sso:google_meet_set_cookie"))
     query_params = urlencode({"session_id": session_id})
     google_meet_create_session_url = f"{base_url}?{query_params}"
     return google_meet_create_session_url

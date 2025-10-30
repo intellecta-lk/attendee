@@ -16,8 +16,8 @@ urlpatterns = [
         name="google_meet_sign_out",
     ),
     path(
-        "google_meet_create_session",
-        bot_sso_views.GoogleMeetCreateSessionView.as_view(),
-        name="google_meet_create_session",
+        "google_meet_set_cookie",
+        bot_sso_views.GoogleMeetSetCookieView.as_view(),
+        name="google_meet_set_cookie",
     ),
 ]

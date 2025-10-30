@@ -11,23 +11,24 @@ logger = logging.getLogger(__name__)
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class GoogleMeetCreateSessionView(View):
+class GoogleMeetSetCookieView(View):
     """
-    GET endpoint that creates a session for the Google Meet SSO flow.
+    GET endpoint that sets a cookie for the Google Meet SSO flow based on the session id.
+    The cookie is used to identify the session when we receive a SAML AuthnRequest.
     """
 
     def get(self, request):
         # There should be a query parameter called "session_id"
         session_id = request.GET.get("session_id")
         if not session_id:
-            return HttpResponseBadRequest("Could not create session")
+            return HttpResponseBadRequest("Could not set cookie")
 
         # Check in redis store to confirm that a key with the id "google_meet_sign_in_session:<session_id>" exists
         if not get_bot_login_for_google_meet_sign_in_session(session_id):
-            return HttpResponseBadRequest("Could not create session")
+            return HttpResponseBadRequest("Could not set cookie")
 
         # Set a cookie with the session_id
-        response = HttpResponse("Google Meet Create Session")
+        response = HttpResponse("Google Meet Set Cookie")
         response.set_cookie(
             "google_meet_sign_in_session_id",
             session_id,
