@@ -992,6 +992,10 @@ class BotController:
                 logger.info(f"Admitting from waiting room for bot {self.bot_in_db.object_id}")
                 self.bot_in_db.refresh_from_db()
                 self.admit_from_waiting_room()
+            elif command == "change_gallery_view_page_next" or command == "change_gallery_view_page_previous":
+                logger.info(f"Changing gallery view page for bot {self.bot_in_db.object_id}. Command: {command}")
+                self.bot_in_db.refresh_from_db()
+                self.change_gallery_view_page(next_page=(command == "change_gallery_view_page_next"))
             else:
                 logger.info(f"Unknown command: {command}")
 
@@ -1000,6 +1004,12 @@ class BotController:
             logger.info(f"Bot {self.bot_in_db.object_id} is in state {BotStates.state_to_api_code(self.bot_in_db.state)} and cannot admit from waiting room")
             return
         self.adapter.admit_from_waiting_room()
+
+    def change_gallery_view_page(self, next_page: bool):
+        if not BotEventManager.is_state_that_can_change_gallery_view_page(self.bot_in_db.state):
+            logger.info(f"Bot {self.bot_in_db.object_id} is in state {BotStates.state_to_api_code(self.bot_in_db.state)} and cannot change gallery view pagination")
+            return
+        self.adapter.change_gallery_view_page(next_page)
 
     def pause_recording_for_pipeline_objects(self):
         pause_recording_success = self.screen_and_audio_recorder.pause_recording() if self.screen_and_audio_recorder else True

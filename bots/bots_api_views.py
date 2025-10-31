@@ -1173,6 +1173,49 @@ class AdmitFromWaitingRoomView(APIView):
             return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
+class ChangeGalleryViewPageView(APIView):
+    authentication_classes = [ApiKeyAuthentication]
+    throttle_classes = [ProjectPostThrottle]
+
+    @extend_schema(exclude=True)
+    def post(self, request, object_id):
+        try:
+            bot = Bot.objects.get(object_id=object_id, project=request.auth.project)
+
+            # This functionality is only supported for zoom bots
+            meeting_type = meeting_type_from_url(bot.meeting_url)
+            if meeting_type != MeetingTypes.ZOOM:
+                return Response({"error": "Admitting from waiting room is not supported for this meeting type"}, status=status.HTTP_400_BAD_REQUEST)
+            # Only for Zoom Web Bots
+            # Only if recording in gallery view
+
+            # Check if bot is in a state that allows changing the gallery view page
+            if not BotEventManager.is_state_that_can_change_gallery_view_page(bot.state):
+                return Response(
+                    {"error": f"Bot is in state {BotStates.state_to_api_code(bot.state)} and cannot change the gallery view page"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            direction = request.data.get("direction", "next")
+            sync_command_to_send = "change_gallery_view_page_next" if direction == "next" else "change_gallery_view_page_previous"
+
+            # Call the utility method on the bot instance to change the gallery view page
+            try:
+                logging.info(f"Changing gallery view page for bot {bot.object_id} to {direction}")
+
+                send_sync_command(bot, sync_command_to_send)
+                return Response(status=status.HTTP_200_OK)
+            except Exception as e:
+                logging.error(f"Error changing gallery view page for bot {bot.object_id} to {direction}: {str(e)}")
+                return Response(
+                    {"error": f"Failed to change gallery view page for bot {bot.object_id} to {direction}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        except Bot.DoesNotExist:
+            return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
 class PauseRecordingView(APIView):
     authentication_classes = [ApiKeyAuthentication]
     throttle_classes = [ProjectPostThrottle]

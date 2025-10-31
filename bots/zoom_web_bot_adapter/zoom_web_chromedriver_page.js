@@ -359,6 +359,30 @@ function sendChatMessage(text, to_user_uuid ) {
     });
 }
 
+function changeGalleryViewPage(changeToNextPage) {
+    /*
+    HTML looks like this:
+    <button type="button" class="gallery-video-container__switch-button gallery-video-container__switch-button--back"><div class="gallery-video-container__arrow gallery-video-container__arrow--back"></div><div class="gallery-video-container__pagination">1/5</div></button>
+    <button type="button" class="gallery-video-container__switch-button" style="right: 0px;"><div class="gallery-video-container__arrow gallery-video-container__arrow--next"></div><div class="gallery-video-container__pagination">1/5</div></button>
+    */
+    try {
+        let button;
+        if (changeToNextPage) {
+            // Find the next button (the one without the --back modifier)
+            button = document.querySelector('.gallery-video-container__switch-button:not(.gallery-video-container__switch-button--back)');
+        } else {
+            // Find the back/previous button
+            button = document.querySelector('.gallery-video-container__switch-button--back');
+        }
+        
+        if (button) {
+            button.click();
+        }
+    } catch (error) {
+        // Do nothing if button cannot be identified
+    }
+}
+
 function closeRequestPermissionModal() {
     try {
         // Find modal with class zm-modal or zm-modal-legacy
