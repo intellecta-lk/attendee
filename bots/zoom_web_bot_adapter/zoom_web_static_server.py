@@ -9,6 +9,22 @@ class _COOPCOEPHandler(SimpleHTTPRequestHandler):
     # directory is set dynamically below
     directory = None
 
+    # Whitelist of allowed files
+    ALLOWED_FILES = {
+        "/zoom_web_chromedriver_page.html",
+        "/zoom_web_chromedriver_page.js",
+        "/zoom_web_chromedriver_style.css",
+    }
+
+    def do_GET(self):
+        # Check if the requested file is in the whitelist
+        if self.path not in self.ALLOWED_FILES:
+            self.send_error(404, "File not found...")
+            return
+
+        # If whitelisted, proceed with normal file serving
+        super().do_GET()
+
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
