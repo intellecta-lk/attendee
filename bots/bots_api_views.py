@@ -39,6 +39,7 @@ from .models import (
     Participant,
     ParticipantEvent,
     Recording,
+    RecordingViews,
     Utterance,
 )
 from .serializers import (
@@ -1185,9 +1186,11 @@ class ChangeGalleryViewPageView(APIView):
             # This functionality is only supported for zoom bots
             meeting_type = meeting_type_from_url(bot.meeting_url)
             if meeting_type != MeetingTypes.ZOOM:
-                return Response({"error": "Admitting from waiting room is not supported for this meeting type"}, status=status.HTTP_400_BAD_REQUEST)
-            # Only for Zoom Web Bots
-            # Only if recording in gallery view
+                return Response({"error": "Changing gallery view page is not supported for this meeting type"}, status=status.HTTP_400_BAD_REQUEST)
+            if not bot.use_zoom_web_adapter():
+                return Response({"error": "Changing gallery view page is only supported for Zoom Web SDK"}, status=status.HTTP_400_BAD_REQUEST)
+            if bot.recording_view() != RecordingViews.GALLERY_VIEW:
+                return Response({"error": "Changing gallery view page is only supported for when recording in gallery view"}, status=status.HTTP_400_BAD_REQUEST)
 
             # Check if bot is in a state that allows changing the gallery view page
             if not BotEventManager.is_state_that_can_change_gallery_view_page(bot.state):
