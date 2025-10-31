@@ -93,6 +93,9 @@ class ZoomWebBotAdapter(WebBotAdapter, ZoomWebUIMethods):
         logger.info(f"send_video called with video_url = {video_url}. This is not supported for zoom web")
         return
 
+    def change_gallery_view_page(self, next_page: bool):
+        self.driver.execute_script(f"window?.changeGalleryViewPage({json.dumps(next_page)})")
+
     def send_chat_message(self, text, to_user_uuid):
         self.driver.execute_script(f"window?.sendChatMessage({json.dumps(text)}, {json.dumps(to_user_uuid)})")
 

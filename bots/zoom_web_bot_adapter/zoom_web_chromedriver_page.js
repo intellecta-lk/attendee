@@ -59,6 +59,8 @@ function startMeeting(signature) {
 
   document.getElementById('zmmtg-root').style.display = 'block'
 
+    const defaultView = window.initialData.recordingView === 'gallery_view' ? 'gallery' : 'speaker';
+
     ZoomMtg.init({
         leaveUrl: leaveUrl,
         patchJsMedia: true,
@@ -66,6 +68,7 @@ function startMeeting(signature) {
         disableZoomLogo: true,
         disablePreview: true,
         enableWaitingRoomPreview: false,
+        defaultView: defaultView,
         //isSupportCC: true,
         //disableJoinAudio: true,
         //isSupportAV: false,
@@ -356,6 +359,30 @@ function sendChatMessage(text, to_user_uuid ) {
     });
 }
 
+function changeGalleryViewPage(changeToNextPage) {
+    /*
+    HTML looks like this:
+    <button type="button" class="gallery-video-container__switch-button gallery-video-container__switch-button--back"><div class="gallery-video-container__arrow gallery-video-container__arrow--back"></div><div class="gallery-video-container__pagination">1/5</div></button>
+    <button type="button" class="gallery-video-container__switch-button" style="right: 0px;"><div class="gallery-video-container__arrow gallery-video-container__arrow--next"></div><div class="gallery-video-container__pagination">1/5</div></button>
+    */
+    try {
+        let button;
+        if (changeToNextPage) {
+            // Find the next button (the one without the --back modifier)
+            button = document.querySelector('.gallery-video-container__switch-button:not(.gallery-video-container__switch-button--back)');
+        } else {
+            // Find the back/previous button
+            button = document.querySelector('.gallery-video-container__switch-button--back');
+        }
+        
+        if (button) {
+            button.click();
+        }
+    } catch (error) {
+        // Do nothing if button cannot be identified
+    }
+}
+
 function closeRequestPermissionModal() {
     try {
         // Find modal with class zm-modal or zm-modal-legacy
@@ -404,17 +431,20 @@ function askForMediaCapturePermission() {
             });
 
         }, error: (error) => {
+            // Also try to close the you need to ask for permission modal
+            setTimeout(() => {
+                closeRequestPermissionModal();
+            }, 500);
+
             // If it fails, we need to ask for permission
+            // If this line throws this error 
+            // https://devforum.zoom.us/t/web-sdk-typeerror-cannot-read-properties-of-undefined-reading-caps/122712
+            // it's because host was not present
             ZoomMtg.mediaCapturePermission({operate: "request", success: (success) => {
                 console.log('mediaCapturePermission success', success);
             }, error: (error) => {
                 console.log('mediaCapturePermission error', error);
             }});
-
-            // Also try to close the you need to ask for permission modal
-            setTimeout(() => {
-                closeRequestPermissionModal();
-            }, 500);
         }});
     }, 1000);
 }
