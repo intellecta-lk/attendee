@@ -59,6 +59,8 @@ function startMeeting(signature) {
 
   document.getElementById('zmmtg-root').style.display = 'block'
 
+    const defaultView = window.initialData.recordingView === 'gallery_view' ? 'gallery' : 'speaker';
+
     ZoomMtg.init({
         leaveUrl: leaveUrl,
         patchJsMedia: true,
@@ -66,6 +68,7 @@ function startMeeting(signature) {
         disableZoomLogo: true,
         disablePreview: true,
         enableWaitingRoomPreview: false,
+        defaultView: defaultView,
         //isSupportCC: true,
         //disableJoinAudio: true,
         //isSupportAV: false,
@@ -404,17 +407,20 @@ function askForMediaCapturePermission() {
             });
 
         }, error: (error) => {
+            // Also try to close the you need to ask for permission modal
+            setTimeout(() => {
+                closeRequestPermissionModal();
+            }, 500);
+
             // If it fails, we need to ask for permission
+            // If this line throws this error 
+            // https://devforum.zoom.us/t/web-sdk-typeerror-cannot-read-properties-of-undefined-reading-caps/122712
+            // it's because host was not present
             ZoomMtg.mediaCapturePermission({operate: "request", success: (success) => {
                 console.log('mediaCapturePermission success', success);
             }, error: (error) => {
                 console.log('mediaCapturePermission error', error);
             }});
-
-            // Also try to close the you need to ask for permission modal
-            setTimeout(() => {
-                closeRequestPermissionModal();
-            }, 500);
         }});
     }, 1000);
 }
