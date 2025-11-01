@@ -17,6 +17,7 @@ from django.utils import timezone
 from bots.automatic_leave_configuration import AutomaticLeaveConfiguration
 from bots.bot_adapter import BotAdapter
 from bots.bot_controller.bot_websocket_client import BotWebsocketClient
+from bots.bot_sso_utils import create_google_meet_sign_in_session
 from bots.bots_api_utils import BotCreationSource
 from bots.external_callback_utils import get_zoom_tokens
 from bots.meeting_url_utils import meeting_type_from_url
@@ -36,6 +37,8 @@ from bots.models import (
     ChatMessage,
     ChatMessageToOptions,
     Credentials,
+    GoogleMeetBotLogin,
+    GoogleMeetBotLoginGroup,
     MeetingTypes,
     Participant,
     ParticipantEvent,
@@ -96,6 +99,26 @@ class BotController:
     def disable_incoming_video_for_web_bots(self):
         return not (self.pipeline_configuration.record_video or self.pipeline_configuration.rtmp_stream_video)
 
+    def create_google_meet_bot_login_session(self):
+        if not self.bot_in_db.google_meet_use_bot_login():
+            return None
+        first_google_meet_bot_login_group = GoogleMeetBotLoginGroup.objects.filter(project=self.bot_in_db.project).first()
+        if not first_google_meet_bot_login_group:
+            return None
+        least_used_google_meet_bot_login = first_google_meet_bot_login_group.google_meet_bot_logins.order_by("last_used_at").first()
+        if not least_used_google_meet_bot_login:
+            return None
+        least_used_google_meet_bot_login.last_used_at = timezone.now()
+        least_used_google_meet_bot_login.save()
+        session_id = create_google_meet_sign_in_session(self.bot_in_db, least_used_google_meet_bot_login)
+        return {
+            "session_id": session_id,
+            "login_email": least_used_google_meet_bot_login.email,
+        }
+
+    def google_meet_bot_login_is_available(self):
+        return self.bot_in_db.google_meet_use_bot_login() and GoogleMeetBotLogin.objects.filter(group__project=self.bot_in_db.project).exists()
+
     def get_google_meet_bot_adapter(self):
         from bots.google_meet_bot_adapter import GoogleMeetBotAdapter
 
@@ -127,6 +150,9 @@ class BotController:
             video_frame_size=self.bot_in_db.recording_dimensions(),
             record_chat_messages_when_paused=self.bot_in_db.record_chat_messages_when_paused(),
             disable_incoming_video=self.disable_incoming_video_for_web_bots(),
+            google_meet_bot_login_is_available=self.google_meet_bot_login_is_available(),
+            google_meet_bot_login_should_be_used=self.bot_in_db.google_meet_login_mode_is_always(),
+            create_google_meet_bot_login_session_callback=self.create_google_meet_bot_login_session,
         )
 
     def get_teams_bot_adapter(self):
@@ -895,7 +921,7 @@ class BotController:
     def take_action_based_on_chat_message_requests_in_db(self):
         chat_message_requests = self.bot_in_db.chat_message_requests.filter(state=BotChatMessageRequestStates.ENQUEUED)
         for chat_message_request in chat_message_requests:
-            self.adapter.send_chat_message(text=chat_message_request.message)
+            self.adapter.send_chat_message(text=chat_message_request.message, to_user_uuid=chat_message_request.to_user_uuid)
             BotChatMessageRequestManager.set_chat_message_request_sent(chat_message_request)
 
     def take_action_based_on_media_requests_in_db(self):
@@ -966,6 +992,10 @@ class BotController:
                 logger.info(f"Admitting from waiting room for bot {self.bot_in_db.object_id}")
                 self.bot_in_db.refresh_from_db()
                 self.admit_from_waiting_room()
+            elif command == "change_gallery_view_page_next" or command == "change_gallery_view_page_previous":
+                logger.info(f"Changing gallery view page for bot {self.bot_in_db.object_id}. Command: {command}")
+                self.bot_in_db.refresh_from_db()
+                self.change_gallery_view_page(next_page=(command == "change_gallery_view_page_next"))
             else:
                 logger.info(f"Unknown command: {command}")
 
@@ -974,6 +1004,12 @@ class BotController:
             logger.info(f"Bot {self.bot_in_db.object_id} is in state {BotStates.state_to_api_code(self.bot_in_db.state)} and cannot admit from waiting room")
             return
         self.adapter.admit_from_waiting_room()
+
+    def change_gallery_view_page(self, next_page: bool):
+        if not BotEventManager.is_state_that_can_change_gallery_view_page(self.bot_in_db.state):
+            logger.info(f"Bot {self.bot_in_db.object_id} is in state {BotStates.state_to_api_code(self.bot_in_db.state)} and cannot change gallery view pagination")
+            return
+        self.adapter.change_gallery_view_page(next_page)
 
     def pause_recording_for_pipeline_objects(self):
         pause_recording_success = self.screen_and_audio_recorder.pause_recording() if self.screen_and_audio_recorder else True
